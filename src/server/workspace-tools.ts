@@ -13,7 +13,8 @@ const MAX_GREP_MATCHES = 100;
 const MAX_GREP_FILES = 500;
 const MAX_GREP_BYTES = 8 * 1024 * 1024;
 const MAX_WRITE_BYTES = 1024 * 1024;
-export const workspaceWritesEnabled = process.env.PI_WEB_ALLOW_WRITES === "true";
+// 写权限默认开启（七个工具全可用）；显式设置 PI_WEB_ALLOW_WRITES=false 可关闭写类工具。
+export const workspaceWritesEnabled = process.env.PI_WEB_ALLOW_WRITES !== "false";
 export const workspaceToolNames = ["workspace_read", "workspace_list", "workspace_find", "workspace_grep"];
 export const bashToolName = "bash";
 export const enabledWorkspaceToolNames = workspaceWritesEnabled ? [...workspaceToolNames, "workspace_write", "workspace_edit", bashToolName] : workspaceToolNames;
