@@ -1,54 +1,53 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo ============================================
-echo    pi-web-frq  一键启动
+echo    pi-web-frq  one-click start
 echo ============================================
 echo.
 
-rem ---- 1) 检查 Node.js ----
+rem ---- 1) check Node.js ----
 node --version >nul 2>&1
 if errorlevel 1 (
-  echo [错误] 未找到 Node.js，请先安装 Node.js 22 或更高版本。
-  echo         下载: https://nodejs.org/
+  echo [ERROR] Node.js not found. Please install Node.js 22+ first.
   pause
   exit /b 1
 )
 
-rem ---- 2) 检查依赖 ----
+rem ---- 2) check dependencies ----
 if not exist "node_modules" (
-  echo [安装] 首次运行需要安装依赖（约 1-3 分钟）...
+  echo [INSTALL] Installing dependencies (1-3 min)...
   call npm install --no-audit --no-fund
   if errorlevel 1 (
-    echo [错误] 依赖安装失败，请检查网络后重试。
+    echo [ERROR] npm install failed.
     pause
     exit /b 1
   )
 )
 
-rem ---- 3) 检查生产构建 ----
+rem ---- 3) check production build ----
 if not exist ".next\BUILD_ID" (
-  echo [构建] 首次运行需要生产构建（约 1-2 分钟）...
+  echo [BUILD] Building production bundle (1-2 min)...
   call npm run build
   if errorlevel 1 (
-    echo [错误] 构建失败，请查看上方日志。
+    echo [ERROR] Build failed.
     pause
     exit /b 1
   )
 )
 
-rem ---- 4) 读取端口（usebackq：命令内的双引号不会被 cmd 截断）----
+rem ---- 4) read port ----
 set "PORT=30142"
 for /f "usebackq delims=" %%p in (`node -e "try{var c=require('node:fs').readFileSync(process.env.USERPROFILE+'/.pi/agent/workbench/service.json','utf8');var p=JSON.parse(c).port;if(Number.isInteger(p)&&p>0)console.log(p);else console.log(30142)}catch(e){console.log(30142)}"`) do set "PORT=%%p"
 
-rem ---- 5) 启动服务（独立窗口，关窗即停）----
-echo [启动] 服务端口 %PORT% ，正在启动...
-start "pi-web-frq-server" cmd /k "chcp 65001 >nul & title pi-web-frq server & node scripts\serve.cjs start"
+rem ---- 5) start server ----
+echo [START] Port %PORT% ...
+start "pi-web-frq-server" cmd /k "chcp 936 >nul & title pi-web-frq server & node scripts\serve.cjs start"
 
-rem ---- 6) 等待服务就绪并打开浏览器 ----
-echo [等待] 服务启动中...
+rem ---- 6) wait ready and open browser ----
+echo [WAIT] Starting...
 set "READY="
 for /l %%i in (1,1,60) do (
   >nul 2>&1 curl -s "http://127.0.0.1:%PORT%/api/health"
@@ -60,15 +59,15 @@ for /l %%i in (1,1,60) do (
 )
 :ready
 if "%READY%"=="1" (
-  echo [完成] 服务已就绪，正在打开浏览器...
+  echo [OK] Server ready, opening browser...
   start "" "http://127.0.0.1:%PORT%"
 ) else (
-  echo [警告] 服务未在 60 秒内就绪，请检查服务窗口日志。
+  echo [WARN] Server not ready in 60s. Check the server window log.
 )
 echo.
-echo 服务地址: http://127.0.0.1:%PORT%
-echo 局域网访问: http://本机IP:%PORT%   (Tailscale: http://设备名:%PORT%)
-echo 停止服务: 关闭 "pi-web-frq server" 窗口，或运行 stop.bat
+echo Local:    http://127.0.0.1:%PORT%
+echo LAN:      http://IP:%PORT%    (Tailscale: http://hostname:%PORT%)
+echo Stop:     close "pi-web-frq server" window, or run stop.bat
 echo.
 pause
 endlocal
