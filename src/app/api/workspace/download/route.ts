@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { NextRequest, NextResponse } from "next/server";
+import { isRestrictedProjectPath } from "@/server/project-isolation";
 import { resolveExistingWorkspacePath } from "@/server/workspace";
 import { workspaceForProjectId } from "@/server/project-workspace";
 
@@ -24,6 +25,10 @@ export async function GET(request: NextRequest) {
   try {
     const root = await workspaceForProjectId(request.nextUrl.searchParams.get("projectId"));
     const absolutePath = resolveExistingWorkspacePath(relativePath, root);
+    // 无项目会话：拒绝下载其他项目目录中的文件。
+    if (await isRestrictedProjectPath(absolutePath, root)) {
+      return errorResponse("invalid_workspace_path", "Workspace path is invalid or unavailable.", 400);
+    }
     const metadata = await stat(absolutePath);
     if (!metadata.isFile()) {
       return errorResponse("invalid_workspace_path", "Workspace path is invalid or unavailable.", 400);

@@ -1,5 +1,6 @@
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import type { WorkspaceContentMatch, WorkspaceContentSearchResponse, WorkspaceEntry, WorkspaceFilePreview, WorkspaceFileSearchResponse } from "../workspace-contracts";
+import { isRestrictedProjectPath } from "./project-isolation";
 import {
   resolveExistingWorkspacePath,
   toWorkspaceRelativePath,
@@ -50,7 +51,10 @@ function workspaceFileErrorFrom(error: unknown): WorkspaceFileError {
 
 async function resolveFile(relativePath: string, root: string): Promise<string> {
   try {
-    return resolveExistingWorkspacePath(relativePath, root);
+    const resolved = resolveExistingWorkspacePath(relativePath, root);
+    // 无项目会话（默认工作区）时拒绝访问其他项目目录，防止越权读取。
+    if (await isRestrictedProjectPath(resolved, root)) throw new WorkspaceFileError("invalid_path");
+    return resolved;
   } catch (error) {
     throw workspaceFileErrorFrom(error);
   }
@@ -76,6 +80,11 @@ async function verifiedDirectoryEntries(relativePath: string, root: string): Pro
       if (entry.isSymbolicLink() || (entry.isDirectory() && isIgnoredDirectory(entry.name))) continue;
 
       const childRelativePath = relativePath === "." ? entry.name : `${relativePath}/${entry.name}`;
+      // 无项目会话：隐藏其他项目的工作区目录（避免默认工作区暴露全部项目内容）。
+      if (entry.isDirectory()) {
+        const childProject = await resolveFile(childRelativePath, root);
+        if (await isRestrictedProjectPath(childProject, root)) continue;
+      }
       try {
         const child = await resolveFile(childRelativePath, root);
         const childStatus = await lstat(child);

@@ -3,6 +3,7 @@ import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { defineTool, withFileMutationQueue, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertSafeWorkspaceRelativePath, resolveExistingWorkspacePath, resolveWorkspaceMutationPath, toWorkspaceRelativePath, workspace } from "./workspace";
+import { isRestrictedProjectPath } from "./project-isolation";
 import { listWorkspaceDirectory as listSafeWorkspaceDirectory } from "./workspace-files";
 
 const MAX_READ_BYTES = 1024 * 1024;
@@ -35,8 +36,14 @@ function decodeUtf8(buffer: Buffer): string {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch { throw new Error("Files must be valid UTF-8 text."); }
 }
 
+/** 无项目会话（默认工作区）时拒绝访问其他项目目录。 */
+async function assertNotRestricted(absolutePath: string, root: string): Promise<void> {
+  if (await isRestrictedProjectPath(absolutePath, root)) throw new Error("That path belongs to another project and is not available.");
+}
+
 export async function readWorkspaceText(relativePath: string, offset?: number, limit?: number, root = workspace): Promise<{ text: string; truncated: boolean; startLine: number; totalLines: number }> {
   const absolutePath = resolveExistingWorkspacePath(relativePath, root);
+  await assertNotRestricted(absolutePath, root);
   const metadata = await stat(absolutePath);
   if (!metadata.isFile()) throw new Error("The path must be a regular file.");
   if (metadata.size > MAX_READ_BYTES) throw new Error("Files larger than 1 MiB cannot be read.");
@@ -116,7 +123,7 @@ export function createWorkspaceTools(root: string): ToolDefinition[] {
         const needle = ignoreCase ? pattern.toLocaleLowerCase() : pattern;
         const matches: string[] = []; let bytes = 0;
         for (const file of await collectFiles(normalizeRelativePath(path), MAX_GREP_FILES, root, signal)) {
-          throwIfAborted(signal); const absolutePath = resolveExistingWorkspacePath(file, root); const metadata = await stat(absolutePath);
+          throwIfAborted(signal); const absolutePath = resolveExistingWorkspacePath(file, root); await assertNotRestricted(absolutePath, root); const metadata = await stat(absolutePath);
           if (metadata.size > MAX_READ_BYTES || bytes + metadata.size > MAX_GREP_BYTES) continue;
           let text: string; try { text = decodeUtf8(await readFile(absolutePath)); } catch { continue; } bytes += metadata.size;
           for (const [index, line] of text.split(/\r?\n/).entries()) { if ((ignoreCase ? line.toLocaleLowerCase() : line).includes(needle)) matches.push(`${file}:${index + 1}:${line.slice(0, 500)}`); if (matches.length >= MAX_GREP_MATCHES) break; }
@@ -130,11 +137,11 @@ export function createWorkspaceTools(root: string): ToolDefinition[] {
   if (!workspaceWritesEnabled) return tools;
   const write = defineTool({
     name: "workspace_write", label: "workspace_write", description: "Create or replace one UTF-8 text file in the active project workspace.", parameters: Type.Object({ path: Type.String(), content: Type.String() }),
-    execute: async (_id, { path, content }, signal) => { try { if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) throw new Error("Write content exceeds 1 MiB."); const target = resolveWorkspaceMutationPath(path, root); return await withFileMutationQueue(target, async () => { throwIfAborted(signal); await writeFile(target, content, "utf8"); return textResult(`Wrote ${toWorkspaceRelativePath(target, root)}.`); }); } catch (error) { return toolError(error); } },
+    execute: async (_id, { path, content }, signal) => { try { if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) throw new Error("Write content exceeds 1 MiB."); const target = resolveWorkspaceMutationPath(path, root); await assertNotRestricted(target, root); return await withFileMutationQueue(target, async () => { throwIfAborted(signal); await writeFile(target, content, "utf8"); return textResult(`Wrote ${toWorkspaceRelativePath(target, root)}.`); }); } catch (error) { return toolError(error); } },
   });
   const edit = defineTool({
     name: "workspace_edit", label: "workspace_edit", description: "Make exact non-overlapping replacements in an active project workspace file.", parameters: Type.Object({ path: Type.String(), edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }), { minItems: 1 }) }),
-    execute: async (_id, { path, edits }, signal) => { try { const target = resolveExistingWorkspacePath(path, root); return await withFileMutationQueue(target, async () => { throwIfAborted(signal); await access(target, constants.R_OK | constants.W_OK); const original = await readFile(target); if (original.length > MAX_WRITE_BYTES) throw new Error("Only UTF-8 text files up to 1 MiB can be edited."); const next = applyEdits(decodeUtf8(original), edits); if (Buffer.byteLength(next, "utf8") > MAX_WRITE_BYTES) throw new Error("Edited content exceeds 1 MiB."); await writeFile(target, next, "utf8"); return textResult(`Edited ${toWorkspaceRelativePath(target, root)}.`); }); } catch (error) { return toolError(error); } },
+    execute: async (_id, { path, edits }, signal) => { try { const target = resolveExistingWorkspacePath(path, root); await assertNotRestricted(target, root); return await withFileMutationQueue(target, async () => { throwIfAborted(signal); await access(target, constants.R_OK | constants.W_OK); const original = await readFile(target); if (original.length > MAX_WRITE_BYTES) throw new Error("Only UTF-8 text files up to 1 MiB can be edited."); const next = applyEdits(decodeUtf8(original), edits); if (Buffer.byteLength(next, "utf8") > MAX_WRITE_BYTES) throw new Error("Edited content exceeds 1 MiB."); await writeFile(target, next, "utf8"); return textResult(`Edited ${toWorkspaceRelativePath(target, root)}.`); }); } catch (error) { return toolError(error); } },
   });
   return [...tools, write, edit];
 }

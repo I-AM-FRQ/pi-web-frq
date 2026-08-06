@@ -362,11 +362,15 @@ select { appearance: auto; background: var(--bg-input); border: 1px solid var(--
 .conversation-status.truncated { border-left: 2px solid var(--warning); color: var(--warning); font-size: 10px; margin: 0 0 20px; padding: 8px 10px; }
 .load-earlier-tasks { background: var(--bg-raised); border: 1px dashed var(--border-strong); border-radius: 7px; color: var(--accent); cursor: pointer; display: block; font: inherit; font-size: 11px; margin: 0 0 24px; padding: 9px 12px; text-align: center; width: 100%; }
 .load-earlier-tasks:hover { background: var(--bg-hover); border-color: var(--accent); }
-.empty-chat { color: var(--text-faint); margin: 14vh auto; max-width: 480px; text-align: left; }
-.empty-chat span { color: var(--accent); font-size: 26px; }
-.empty-chat h2 { color: var(--text); font-size: 20px; margin: 13px 0 8px; }
-.empty-chat p { font-size: 12px; line-height: 1.8; margin: 0; }
-.empty-chat kbd { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font: inherit; padding: 1px 4px; }
+.empty-chat { align-items: center; color: var(--text-faint); display: flex; flex-direction: column; margin: 12vh auto; max-width: 520px; text-align: center; }
+.empty-chat-logo { align-items: center; background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 42%, transparent), color-mix(in srgb, var(--accent) 10%, transparent) 72%); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-radius: 26px; box-shadow: var(--shadow-soft); display: flex; height: 86px; justify-content: center; margin-bottom: 24px; width: 86px; }
+.empty-chat-logo svg { fill: none; height: 40px; stroke: var(--accent-strong); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; width: 40px; }
+.empty-chat h2 { color: var(--text); font-size: 22px; margin: 0 0 10px; }
+.empty-chat > p { font-size: 13px; line-height: 1.7; margin: 0 0 26px; }
+.empty-chat-hints { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.empty-chat-hint { align-items: center; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 11px; color: var(--text-secondary); display: flex; font-size: 12px; gap: 8px; padding: 9px 13px; transition: border-color 0.14s ease, background-color 0.14s ease; }
+.empty-chat-hint:hover { background: var(--bg-raised); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.empty-chat-hint .empty-chat-kbd { background: var(--bg-code); border: 1px solid var(--border); border-radius: 6px; color: var(--accent-strong); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1; padding: 4px 7px; }
 .task-group { margin: 0 0 38px; max-width: 960px; }
 /* 用户消息：独立的右侧紧凑气泡。Markdown 的块级间距在这里完全重置，避免撑高气泡。 */
 .user-message { align-items: flex-end; display: flex; flex-direction: column; margin: 0 0 20px; }
