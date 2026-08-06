@@ -42,9 +42,9 @@ rem ---- 4) read port ----
 set "PORT=30142"
 for /f "usebackq delims=" %%p in (`node -e "try{var c=require('node:fs').readFileSync(process.env.USERPROFILE+'/.pi/agent/workbench/service.json','utf8');var p=JSON.parse(c).port;if(Number.isInteger(p)&&p>0)console.log(p);else console.log(30142)}catch(e){console.log(30142)}"`) do set "PORT=%%p"
 
-rem ---- 5) start server ----
-echo [START] Port %PORT% ...
-start "pi-web-frq-server" cmd /k "chcp 936 >nul & title pi-web-frq server & node scripts\serve.cjs start"
+rem ---- 5) start server in background (logs to server.log) ----
+echo [START] Port %PORT% , logs: server.log
+start /b "" node scripts\serve.cjs start > server.log 2>&1
 
 rem ---- 6) wait ready and open browser ----
 echo [WAIT] Starting...
@@ -55,19 +55,19 @@ for /l %%i in (1,1,60) do (
     set "READY=1"
     goto :ready
   )
-  timeout /t 1 /nobreak >nul
+  ping -n 2 127.0.0.1 >nul
 )
 :ready
 if "%READY%"=="1" (
   echo [OK] Server ready, opening browser...
   start "" "http://127.0.0.1:%PORT%"
 ) else (
-  echo [WARN] Server not ready in 60s. Check the server window log.
+  echo [WARN] Server not ready in 60s. See server.log.
 )
 echo.
 echo Local:    http://127.0.0.1:%PORT%
 echo LAN:      http://IP:%PORT%    (Tailscale: http://hostname:%PORT%)
-echo Stop:     close "pi-web-frq server" window, or run stop.bat
+echo Stop:     run stop.bat
 echo.
 pause
 endlocal
