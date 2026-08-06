@@ -20,10 +20,12 @@
 npm install        # 首次
 ```
 
-之后每次双击 **`start.bat`** 即可：自动构建（首次）→ 启动服务 → 自动打开浏览器。
+之后**双击 `start.vbs`** 即可：无窗口后台启动服务（日志写 `server.log`），并自动打开浏览器。服务在后台常驻，关闭任何窗口都不影响。
 
-- `start-hidden.vbs`：后台静默启动（日志写 `server.log`）
+- `start.vbs` / `start.bat`：一键启动（无窗口）
 - `stop.bat`：停止服务
+
+首次运行会自动 `npm install` 与生产构建（需要几分钟，进度写在 `start.log`）。
 
 ### 手动启动
 

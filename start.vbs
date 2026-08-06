@@ -1,5 +1,5 @@
-' pi-web-frq 后台静默启动：无窗口运行，服务在后台常驻（日志写 server.log）。
-' 停止请运行 stop.bat（或 stop-hidden.vbs）。
+' pi-web-frq 一键启动（无窗口）：双击本文件即可。
+' 后台运行服务（日志写 server.log），并自动打开浏览器。停止运行 stop.bat。
 
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)

@@ -1,3 +1,2 @@
 @echo off
-node "%~dp0start.js"
-pause
+start "" wscript.exe "%~dp0start.vbs"
