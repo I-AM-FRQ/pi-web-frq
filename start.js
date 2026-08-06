@@ -86,6 +86,7 @@ async function main() {
   const server = spawn(process.execPath, [path.join(root, "scripts", "serve.cjs"), "start"], {
     cwd: root,
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", logFd, logFd],
   });
   server.unref();
