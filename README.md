@@ -51,6 +51,24 @@
 
 ## 安装与运行
 
+### 一键启动（推荐）
+
+```powershell
+# 首次使用：先安装依赖（Node.js 22+）
+npm install
+
+# 之后每次双击 start.bat 即可：
+#   · 自动检查依赖/构建（首次自动执行）
+#   · 生产模式启动服务（读取 ~/.pi/agent/workbench/service.json 的端口）
+#   · 就绪后自动打开浏览器
+```
+
+- `start.bat`：前台控制台窗口，关闭窗口即停止服务。
+- `start-hidden.vbs`：后台静默启动，日志写入 `server.log`（`stop.bat` 停止）。
+- `stop.bat`：按命令行精确结束服务进程。
+
+### 手动运行
+
 ```powershell
 npm install
 $env:PI_WEB_WORKSPACE = "D:\Program\agent\pi\pi-web-ui"
