@@ -12,7 +12,7 @@
 
 ## 怎么启动
 
-前置条件：Node.js 22+，并已配置至少一个 pi 模型（用 pi CLI 登录，或配置 `~/.pi/agent/models.json`）。
+前置条件：Node.js 22+。
 
 ### 一键启动（推荐）
 
