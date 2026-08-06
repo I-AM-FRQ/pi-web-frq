@@ -1,0 +1,409 @@
+"use client";
+
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChatMarkdown } from "@/components/chat-markdown";
+import type { ConversationItem, LiveTimelineItem, ModelDescriptor } from "@/contracts";
+
+type ConversationViewProps = {
+  conversation: ConversationItem[];
+  pendingPrompt: string;
+  timeline: LiveTimelineItem[];
+  retry: { attempt: number; maxAttempts: number; delayMs: number; message: string } | null;
+  error: string;
+  isStreaming: boolean;
+  runId: string;
+  isLoading: boolean;
+  truncated: boolean;
+  onLoadEarlier?: () => Promise<boolean>;
+  loadingEarlier?: boolean;
+  models: ModelDescriptor[];
+  liveModelName: string;
+  onUserMessageAction?: (action: "copy" | "edit" | "fork", content: string, entryId?: string) => void;
+  runStartedAt?: number;
+  runFinishedAt?: number | null;
+  runReplay?: boolean;
+};
+
+/** 一个任务组：从用户消息开始，保留思考、工具与回复的原始顺序。 */
+type TaskGroup = {
+  user?: Extract<ConversationItem, { type: "user" }>;
+  items: ConversationItem[];
+};
+
+function timeLabel(timestamp: string) {
+  return new Date(timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** 将毫秒格式化为可读的耗时。 */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+/** 任务组执行时间：从用户发出任务到最终回复的实际跨度。 */
+function taskDuration(items: ConversationItem[]): string | null {
+  const first = items.find((item) => item.type === "user") ?? items.find((item) => item.type !== "user");
+  let last: ConversationItem | undefined;
+  for (const item of items) if (item.type === "assistant") last = item;
+  if (!first || !last) return null;
+  const start = Date.parse(first.timestamp);
+  const end = Date.parse(last.timestamp);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return formatDuration(end - start);
+}
+
+function taskGroups(conversation: ConversationItem[]) {
+  const groups: TaskGroup[] = [];
+  let current: TaskGroup | undefined;
+  for (const item of conversation) {
+    if (item.type === "user") {
+      current = { user: item, items: [item] };
+      groups.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { items: [] };
+      groups.push(current);
+    }
+    current.items.push(item);
+  }
+  return groups;
+}
+
+function modelLabel(model: { provider: string; id: string } | undefined, models: ModelDescriptor[]) {
+  if (!model) return "模型";
+  return models.find((candidate) => candidate.provider === model.provider && candidate.id === model.id)?.name ?? model.id;
+}
+
+function imagesBeforeText(content: string) {
+  const imageLines: string[] = [];
+  const textLines: string[] = [];
+  for (const line of content.split("\n")) {
+    if (/^!\[[^\]]*\]\([^\s)]+(?:\s+[^)]*)?\)$/.test(line.trim())) imageLines.push(line);
+    else textLines.push(line);
+  }
+  const images = imageLines.join("\n\n");
+  const text = textLines.join("\n").trim();
+  return images && text ? `${images}\n\n${text}` : images || text;
+}
+
+/** 完成后的思考 + 执行过程折叠区，标题带整个执行时间。 */
+function ExecutionCollapse({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="execution-collapse" open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+      <summary>{label}</summary>
+      <div className="execution-collapse-body">{children}</div>
+    </details>
+  );
+}
+
+/** Codex 风格工具/命令单元格：点击已完成步骤可查看 Pi 保存的原始返回。 */
+function ToolSteps({ tools }: { tools: Array<{ id: string; name: string; label: string; result?: string; isError: boolean; running: boolean }> }) {
+  const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(() => new Set());
+  if (tools.length === 0) return null;
+  return (
+    <div className="codex-tool-steps">
+      {tools.map((tool) => {
+        const parts = tool.label.split("·").map((part) => part.trim());
+        const canExpand = !tool.running && tool.result !== undefined;
+        const expanded = expandedToolIds.has(tool.id);
+        const outputId = `tool-output-${tool.id}`;
+        return (
+          <div key={tool.id} className={`codex-tool-step${tool.isError ? " failed" : ""}${tool.running ? " running" : ""}${expanded ? " expanded" : ""}`}>
+            <button
+              type="button"
+              className="codex-tool-trigger"
+              disabled={!canExpand}
+              aria-expanded={canExpand ? expanded : undefined}
+              aria-controls={canExpand ? outputId : undefined}
+              onClick={() => setExpandedToolIds((current) => {
+                const next = new Set(current);
+                if (next.has(tool.id)) next.delete(tool.id);
+                else next.add(tool.id);
+                return next;
+              })}
+            >
+              <span className="codex-tool-bullet" aria-hidden="true">{tool.running ? <i className="codex-spinner" /> : tool.isError ? "✗" : "✓"}</span>
+              <span className="codex-tool-name">{parts[0]}</span>
+              {parts.length > 1 ? <span className="codex-tool-args">{parts.slice(1).join(" · ")}</span> : null}
+              {canExpand ? <span className="codex-tool-disclosure" aria-hidden="true">{expanded ? "⌄" : "›"}</span> : null}
+            </button>
+            {expanded ? <pre id={outputId} className="codex-tool-output">{tool.result}</pre> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function UserMessage({ content, timestamp, pending, entryId, onAction }: { content: string; timestamp?: string; pending?: boolean; entryId?: string; onAction?: (action: "copy" | "edit" | "fork", content: string, entryId?: string) => void }) {
+  return (
+    <article className={`user-message${pending ? " pending" : ""}`} aria-label="你的任务">
+      <div className="message-body"><ChatMarkdown content={imagesBeforeText(content)} /></div>
+      {timestamp || (!pending && onAction) ? (
+        <div className="user-message-meta">
+          {timestamp ? <time dateTime={timestamp}>{timeLabel(timestamp)}</time> : null}
+          {!pending && onAction ? (
+            <div className="user-message-actions">
+              <button type="button" onClick={() => onAction("copy", content, entryId)} aria-label="复制这条消息"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>复制</button>
+              {entryId ? <button type="button" onClick={() => onAction("edit", content, entryId)} aria-label="从此处编辑"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>从此处编辑</button> : null}
+              {entryId ? <button type="button" onClick={() => onAction("fork", content, entryId)} aria-label="从此处分支"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14" /><path d="M5 12h14" /></svg>从此处分支</button> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+/** 渲染单个历史任务组：用户消息 → 折叠的执行过程 → 最终回复。 */
+function HistoricalTask({ task, models, onUserMessageAction }: { task: TaskGroup; models: ModelDescriptor[]; onUserMessageAction?: (action: "copy" | "edit" | "fork", content: string, entryId?: string) => void }) {
+  const items = task.items;
+  const duration = taskDuration(items);
+  const finalIndex = items.map((item) => item.type).lastIndexOf("assistant");
+  const user = items.find((item) => item.type === "user");
+  const finalItem = finalIndex >= 0 ? (items[finalIndex] as Extract<ConversationItem, { type: "assistant" }>) : undefined;
+  const executionItems = items.filter((item, index) => item.type === "thinking" || item.type === "tool" || (item.type === "assistant" && index !== finalIndex));
+  return (
+    <section className="task-group">
+      {user ? <UserMessage content={user.content} timestamp={user.timestamp} entryId={user.id} onAction={onUserMessageAction} /> : null}
+      {executionItems.length > 0 ? (
+        <ExecutionCollapse label={`思考与执行过程${duration ? ` · ${duration}` : ""}`}>
+          {executionItems.map((item, index) => {
+            if (item.type === "tool") return <ToolSteps key={item.id} tools={[{ ...item, running: false }]} />;
+            if (item.type === "thinking") return <div className="thinking-content" key={`${item.timestamp}-${index}`}>{item.content}</div>;
+            return <div className="execution-inline" key={`${item.timestamp}-${index}`}><ChatMarkdown content={item.content} /></div>;
+          })}
+        </ExecutionCollapse>
+      ) : null}
+      {finalItem ? (
+        <>
+          <div className="final-separator" aria-hidden="true" />
+          <article className={`assistant-reply${finalItem.isError ? " failed" : ""}`}>
+            <header><span className="assistant-model">{modelLabel(finalItem.model, models)}</span><time>{timeLabel(finalItem.timestamp)}</time></header>
+            <div className="message-body"><ChatMarkdown content={finalItem.content} /></div>
+            {finalItem.isError ? <p className="chat-error" role="alert">此任务未能完成。</p> : null}
+          </article>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+const STREAM_BOTTOM_INSET = 220;
+const STREAM_TOP_INSET = 32;
+
+export function ConversationView({ conversation, pendingPrompt, timeline, retry, error, isStreaming, runId, isLoading, truncated, onLoadEarlier, loadingEarlier = false, models, liveModelName, onUserMessageAction, runStartedAt, runFinishedAt, runReplay = false }: ConversationViewProps) {
+  const hasLiveResponse = Boolean(pendingPrompt || timeline.length > 0 || error || isStreaming);
+  const tasks = useMemo(() => taskGroups(conversation), [conversation]);
+  const conversationKey = `${conversation.length}:${conversation.at(-1)?.timestamp ?? ""}`;
+  const conversationRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  const liveTaskRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const shouldScrollAfterLoadingRef = useRef(false);
+  const browsingHistoryRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const streamStartedRef = useRef(false);
+  const loadEarlierRequestedRef = useRef(false);
+  const earlierScrollSnapshotRef = useRef<{ height: number; top: number; itemCount: number } | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+
+  const requestEarlierConversation = () => {
+    const container = conversationRef.current;
+    if (!container || !truncated || loadingEarlier || loadEarlierRequestedRef.current || !onLoadEarlier) return;
+    loadEarlierRequestedRef.current = true;
+    earlierScrollSnapshotRef.current = { height: container.scrollHeight, top: container.scrollTop, itemCount: conversation.length };
+    void onLoadEarlier().then((loaded) => {
+      if (!loaded) earlierScrollSnapshotRef.current = null;
+    }).finally(() => {
+      loadEarlierRequestedRef.current = false;
+    });
+  };
+
+  const updateBottomStickiness = () => {
+    const container = conversationRef.current;
+    if (!container) return;
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 24;
+    if (container.scrollTop < lastScrollTopRef.current) browsingHistoryRef.current = true;
+    lastScrollTopRef.current = container.scrollTop;
+    shouldStickToBottomRef.current = atBottom;
+    if (atBottom) browsingHistoryRef.current = false;
+  };
+
+  const pauseBottomStickiness = () => {
+    browsingHistoryRef.current = true;
+    shouldStickToBottomRef.current = false;
+  };
+
+  useLayoutEffect(() => {
+    if (isStreaming && !streamStartedRef.current) {
+      streamStartedRef.current = true;
+      browsingHistoryRef.current = false;
+      shouldStickToBottomRef.current = true;
+    }
+    if (!isStreaming) streamStartedRef.current = false;
+  }, [isStreaming, pendingPrompt, runId]);
+
+  // 流式增量/状态切换时保持底部；用户浏览历史后，本轮不再抢回滚动位置。
+  useLayoutEffect(() => {
+    if (isLoading) {
+      shouldScrollAfterLoadingRef.current = true;
+      return;
+    }
+    const container = conversationRef.current;
+    const earlierSnapshot = earlierScrollSnapshotRef.current;
+    if (container && earlierSnapshot && conversation.length > earlierSnapshot.itemCount) {
+      container.scrollTop = earlierSnapshot.top + container.scrollHeight - earlierSnapshot.height;
+      lastScrollTopRef.current = container.scrollTop;
+      earlierScrollSnapshotRef.current = null;
+      return;
+    }
+    if (!container || browsingHistoryRef.current) return;
+    if (shouldScrollAfterLoadingRef.current || shouldStickToBottomRef.current) {
+      container.scrollTop = container.scrollHeight;
+      lastScrollTopRef.current = container.scrollTop;
+      shouldStickToBottomRef.current = true;
+      shouldScrollAfterLoadingRef.current = false;
+    }
+  }, [conversation, conversationKey, error, isLoading, isStreaming, pendingPrompt, timeline]);
+
+  // 按当前任务实际高度计算底部留白，使任务起点尽量贴近聊天区顶部。
+  useLayoutEffect(() => {
+    const container = conversationRef.current;
+    const liveTask = liveTaskRef.current;
+    if (!container || !liveTask || !isStreaming) {
+      container?.style.removeProperty("--live-task-space");
+      return;
+    }
+    const updateLiveTaskSpace = () => {
+      const space = Math.max(0, container.clientHeight - STREAM_BOTTOM_INSET - STREAM_TOP_INSET - liveTask.offsetHeight);
+      container.style.setProperty("--live-task-space", `${Math.ceil(space)}px`);
+      if (shouldStickToBottomRef.current && !browsingHistoryRef.current) {
+        container.scrollTop = container.scrollHeight;
+        lastScrollTopRef.current = container.scrollTop;
+      }
+    };
+    const observer = new ResizeObserver(updateLiveTaskSpace);
+    observer.observe(container);
+    observer.observe(liveTask);
+    updateLiveTaskSpace();
+    return () => observer.disconnect();
+  }, [isStreaming]);
+
+  // 内容高度变化（工具展开、图片加载、markdown 延迟渲染等）时同样保持底部。
+  useLayoutEffect(() => {
+    const container = conversationRef.current;
+    const rail = railRef.current;
+    if (!container || !rail) return;
+    const observer = new ResizeObserver(() => {
+      if (shouldStickToBottomRef.current && !browsingHistoryRef.current && !isLoading) {
+        container.scrollTop = container.scrollHeight;
+        lastScrollTopRef.current = container.scrollTop;
+      }
+    });
+    observer.observe(rail);
+    return () => observer.disconnect();
+  }, [isLoading]);
+
+  // 实时：把时间线拆成“思考+工具+中间文本”（执行过程）和“最终回复”。
+  const lastTextIndex = timeline.map((item) => item.kind).lastIndexOf("text");
+  const executionTimeline = lastTextIndex >= 0 ? timeline.filter((item, index) => index !== lastTextIndex) : timeline;
+  const finalTimelineText = lastTextIndex >= 0 ? (timeline[lastTextIndex] as Extract<LiveTimelineItem, { kind: "text" }>) : null;
+  // 重放（刷新后恢复）的 run 不计耗时：其 startedAt/finishedAt 是重放耗时而非真实执行时间。
+  const runDuration = !runReplay && runStartedAt && runFinishedAt ? formatDuration(runFinishedAt - runStartedAt) : null;
+  const isFinished = !isStreaming;
+
+  return (
+    <div
+      ref={conversationRef}
+      className={`conversation${isStreaming ? " streaming" : ""}`}
+      onScroll={() => {
+        updateBottomStickiness();
+        if (conversationRef.current && conversationRef.current.scrollTop <= 2) requestEarlierConversation();
+      }}
+      onWheelCapture={(event) => {
+        if (event.deltaY < 0) pauseBottomStickiness();
+      }}
+      onTouchStart={(event) => {
+        touchStartYRef.current = event.touches[0]?.clientY ?? null;
+      }}
+      onTouchMove={(event) => {
+        const startY = touchStartYRef.current;
+        const currentY = event.touches[0]?.clientY;
+        if (startY !== null && currentY !== undefined && currentY > startY) pauseBottomStickiness();
+      }}
+      onTouchEnd={() => {
+        touchStartYRef.current = null;
+      }}
+      aria-live="polite"
+      aria-busy={isLoading || isStreaming}
+    >
+      <div ref={railRef} className="conversation-rail">
+        {isLoading ? <p className="conversation-status">正在恢复会话记录…</p> : null}
+        {!isLoading && tasks.length === 0 && !hasLiveResponse ? <div className="empty-chat"><span aria-hidden="true">◇</span><h2>从一个任务开始</h2><p>描述目标、约束和预期结果；可使用 <kbd>@</kbd> 引用工作区文件。</p></div> : null}
+        {tasks.map((task, index) => <HistoricalTask task={task} models={models} onUserMessageAction={onUserMessageAction} key={`${task.user?.timestamp ?? "history"}-${index}`} />)}
+
+        {isStreaming ? (
+          <div ref={liveTaskRef} className="live-task">
+            {pendingPrompt ? <UserMessage content={pendingPrompt} pending /> : null}
+            {!error ? (
+              <>
+                {retry ? <div className="retry-status" role="status">上游服务繁忙，{Math.max(1, Math.ceil(retry.delayMs / 1000))} 秒后进行第 {retry.attempt}/{retry.maxAttempts} 次重试。</div> : null}
+                {timeline.length === 0 && !retry ? <div className="thinking-content">正在思考…</div> : null}
+                {timeline.map((item, index) => {
+                  if (item.kind === "tool") {
+                    return <ToolSteps key={`${item.id}-${index}`} tools={[{ id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: item.running }]} />;
+                  }
+                  if (item.kind === "thinking") {
+                    return <div className="thinking-content" key={index}><ChatMarkdown content={item.text} /></div>;
+                  }
+                  return (
+                    <article key={index} className="assistant-reply live">
+                      <header><span className="assistant-model">{liveModelName}</span><time>{runId ? runId.slice(0, 8) : "进行中"}</time></header>
+                      <div className="message-body"><ChatMarkdown content={item.text} /></div>
+                    </article>
+                  );
+                })}
+              </>
+            ) : null}
+          </div>
+        ) : pendingPrompt ? <UserMessage content={pendingPrompt} pending /> : null}
+
+        {/* 完成：思考+执行过程折叠，最终回复保留在外 */}
+        {isFinished && timeline.length > 0 ? (
+          <>
+            <ExecutionCollapse label={`思考与执行过程${runDuration ? ` · ${runDuration}` : ""}`}>
+              {executionTimeline.length > 0 ? executionTimeline.map((item, index) => {
+                if (item.kind === "tool") {
+                  return <ToolSteps key={`${item.id}-${index}`} tools={[{ id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: item.running }]} />;
+                }
+                if (item.kind === "thinking") {
+                  return <div className="thinking-content" key={index}><ChatMarkdown content={item.text} /></div>;
+                }
+                return <div className="execution-inline" key={index}><ChatMarkdown content={item.text} /></div>;
+              }) : <p className="execution-unavailable">此模型未返回可展示的思考或工具事件。</p>}
+            </ExecutionCollapse>
+            {finalTimelineText ? (
+              <>
+                <div className="final-separator" aria-hidden="true" />
+                <article className={`assistant-reply live${error ? " failed" : ""}`}>
+                  <header><span className="assistant-model">{liveModelName}</span><time>{runId ? runId.slice(0, 8) : "进行中"}</time></header>
+                  <div className="message-body"><ChatMarkdown content={finalTimelineText.text} /></div>
+                </article>
+              </>
+            ) : null}
+          </>
+        ) : null}
+        {error ? <p className="chat-error" role="alert">{error}</p> : null}
+      </div>
+    </div>
+  );
+}

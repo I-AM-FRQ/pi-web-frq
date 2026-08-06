@@ -1,0 +1,20 @@
+node_modules/
+.next/
+coverage/
+.env.local
+*.tsbuildinfo
+
+# 运行数据
+.pi-web/
+.pi-web-attachments/
+.browser-screenshots/
+*.log
+npm-debug.log*
+
+# 临时脚本（非工作台代码）
+search4.py
+slotmap3.py
+verify_extended.py
+verify_known.py
+verify_three_gods.py
+verify4.py

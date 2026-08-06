@@ -1,0 +1,41 @@
+{
+  "name": "pi-web-frq",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local, multi-model web coding workspace powered by pi",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "node scripts/serve.cjs dev",
+    "build": "next build --webpack",
+    "start": "node scripts/serve.cjs start",
+    "dev:lan": "npm run dev",
+    "start:lan": "npm run start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.82.1",
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@mdxeditor/editor": "^4.2.0",
+    "next": "16.2.12",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "typebox": "1.1.38"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "3.3.3",
+    "@types/node": "25.0.3",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.1",
+    "eslint-config-next": "16.2.12",
+    "typescript": "^6.0.3",
+    "vitest": "4.0.16"
+  }
+}
