@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, readFile, stat, writeFile } from "node:fs/promises";
-import { defineTool, withFileMutationQueue, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, defineTool, withFileMutationQueue, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assertSafeWorkspaceRelativePath, resolveExistingWorkspacePath, resolveWorkspaceMutationPath, toWorkspaceRelativePath, workspace } from "./workspace";
 import { isRestrictedProjectPath } from "./project-isolation";
@@ -15,8 +15,9 @@ const MAX_GREP_BYTES = 8 * 1024 * 1024;
 const MAX_WRITE_BYTES = 1024 * 1024;
 export const workspaceWritesEnabled = process.env.PI_WEB_ALLOW_WRITES === "true";
 export const workspaceToolNames = ["workspace_read", "workspace_list", "workspace_find", "workspace_grep"];
-export const enabledWorkspaceToolNames = workspaceWritesEnabled ? [...workspaceToolNames, "workspace_write", "workspace_edit"] : workspaceToolNames;
-export const workspaceCapabilities = { read: true, list: true, find: true, grep: true, write: workspaceWritesEnabled, edit: workspaceWritesEnabled } as const;
+export const bashToolName = "bash";
+export const enabledWorkspaceToolNames = workspaceWritesEnabled ? [...workspaceToolNames, "workspace_write", "workspace_edit", bashToolName] : workspaceToolNames;
+export const workspaceCapabilities = { read: true, list: true, find: true, grep: true, write: workspaceWritesEnabled, edit: workspaceWritesEnabled, bash: workspaceWritesEnabled } as const;
 
 function textResult(text: string) { return { content: [{ type: "text" as const, text }], details: {} }; }
 function toolError(error: unknown): never { throw new Error(`Workspace operation rejected: ${error instanceof Error ? error.message : "Workspace operation was rejected."}`); }
@@ -148,3 +149,15 @@ export function createWorkspaceTools(root: string): ToolDefinition[] {
 
 export const enabledWorkspaceTools = createWorkspaceTools(workspace);
 export async function listWorkspaceDirectory(relativePath = ".", root = workspace) { return listSafeWorkspaceDirectory(normalizeRelativePath(relativePath), root); }
+
+/**
+ * 项目内 bash 工具：cwd 固定为项目根，仅写权限开启时启用。
+ * 注意：bash 命令可任意执行（与 pi 内置 bash 一致），cwd 边界不阻止 `cd ..` 等显式越权，
+ * 仅限受信任的模型使用；部署到 LAN 时请开启访问令牌。
+ */
+export function createWorkspaceBashTool(root: string): ToolDefinition {
+  // 类型断言：createBashToolDefinition 携带 BashToolDetails 具体泛型，与 customTools 的 ToolDefinition[] 默认泛型对齐。
+  return createBashToolDefinition(root, {
+    spawnHook: (context) => ({ ...context, cwd: root }),
+  }) as ToolDefinition;
+}

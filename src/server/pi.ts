@@ -6,7 +6,7 @@ import {
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@/contracts";
 import { workspace } from "@/server/workspace";
-import { createWorkspaceTools, enabledWorkspaceToolNames } from "@/server/workspace-tools";
+import { createWorkspaceTools, createWorkspaceBashTool, enabledWorkspaceToolNames } from "@/server/workspace-tools";
 import { enabledAgentResourcePaths } from "@/server/agent-resources";
 import { readProjectSystemPrompt } from "@/server/system-prompt";
 
@@ -89,6 +89,6 @@ export async function createChatSession(
     model,
     thinkingLevel,
     tools: [...ALLOWED_TOOLS, ...extensionTools],
-    customTools: createWorkspaceTools(root),
+    customTools: [...createWorkspaceTools(root), createWorkspaceBashTool(root)],
   });
 }
