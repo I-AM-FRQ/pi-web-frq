@@ -1,2 +1,3 @@
 @echo off
-start "" wscript.exe "%~dp0start.vbs"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start.ps1"
+pause

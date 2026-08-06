@@ -1,3 +1,3 @@
 @echo off
-node "%~dp0stop.js"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
 pause
