@@ -352,12 +352,7 @@ export function ConversationView({ conversation, pendingPrompt, timeline, retry,
           <div className="empty-chat">
             <div className="empty-chat-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg></div>
             <h2>开始新的对话</h2>
-            <p>描述目标、约束和预期结果，或使用下面的快捷方式</p>
-            <div className="empty-chat-hints">
-              <div className="empty-chat-hint"><span className="empty-chat-kbd">@</span><span>引用工作区文件</span></div>
-              <div className="empty-chat-hint"><span className="empty-chat-kbd">/</span><span>斜杠命令</span></div>
-              <div className="empty-chat-hint"><span className="empty-chat-kbd">Ctrl V</span><span>粘贴图片</span></div>
-            </div>
+            <p>描述你想要的，或与模型一起创造</p>
           </div>
         ) : null}
         {tasks.map((task, index) => <HistoricalTask task={task} models={models} onUserMessageAction={onUserMessageAction} key={`${task.user?.timestamp ?? "history"}-${index}`} />)}
