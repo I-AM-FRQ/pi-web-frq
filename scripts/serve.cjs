@@ -8,40 +8,60 @@ const os = require("node:os");
 const path = require("node:path");
 
 const CONFIG_PATH = process.env.PI_WEB_SERVICE_CONFIG || path.join(os.homedir(), ".pi", "agent", "workbench", "service.json");
+const DEFAULT_WORKSPACE = path.join(os.homedir(), "Documents", "Pi", "Default");
+const DEFAULT_PROJECT_WORKSPACES_ROOT = path.join(os.homedir(), "Documents", "Pi");
 
-function readConfig() {
+function readConfig(configPath = CONFIG_PATH) {
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
     const port = Number(raw?.port);
     return {
       port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null,
-      workspace: typeof raw?.workspace === "string" && raw.workspace.length > 0 ? raw.workspace : null,
-      projectWorkspacesRoot: typeof raw?.projectWorkspacesRoot === "string" && raw.projectWorkspacesRoot.length > 0 ? raw.projectWorkspacesRoot : null,
+      workspace: typeof raw?.workspace === "string" && raw.workspace.trim().length > 0 ? raw.workspace.trim() : null,
+      projectWorkspacesRoot: typeof raw?.projectWorkspacesRoot === "string" && raw.projectWorkspacesRoot.trim().length > 0 ? raw.projectWorkspacesRoot.trim() : null,
     };
   } catch {
     return { port: null, workspace: null, projectWorkspacesRoot: null };
   }
 }
 
-const command = process.argv[2] ?? "dev";
-if (command !== "dev" && command !== "start") {
-  console.error(`Unknown command "${command}". Expected "dev" or "start".`);
-  process.exit(1);
+/**
+ * 由启动器显式注入无项目工作区，避免无 service.json 时回退到应用源码 cwd。
+ * 默认固定为 ~/Documents/Pi/Default；只有用户在 service.json（全局设置）中显式指定时才覆盖。
+ */
+function createServerEnvironment(config, parentEnv = process.env) {
+  const port = config.port ?? 30142;
+  const workspace = config.workspace ?? DEFAULT_WORKSPACE;
+  const projectWorkspacesRoot = config.projectWorkspacesRoot ?? parentEnv.PI_WEB_PROJECT_WORKSPACES_DIR ?? DEFAULT_PROJECT_WORKSPACES_ROOT;
+  return {
+    ...parentEnv,
+    PORT: String(port),
+    PI_WEB_WORKSPACE: workspace,
+    PI_WEB_PROJECT_WORKSPACES_DIR: projectWorkspacesRoot,
+  };
 }
 
-const config = readConfig();
-const port = config.port ?? 30142;
-const nextBin = require.resolve("next/dist/bin/next", { paths: [__dirname, process.cwd()] });
-const child = spawn(process.execPath, [nextBin, command, "-H", "0.0.0.0", "-p", String(port)], {
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    PORT: String(port),
-    ...(config.workspace ? { PI_WEB_WORKSPACE: config.workspace } : {}),
-    ...(config.projectWorkspacesRoot ? { PI_WEB_PROJECT_WORKSPACES_DIR: config.projectWorkspacesRoot } : {}),
-  },
-});
-child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  else process.exit(code ?? 0);
-});
+function main() {
+  const command = process.argv[2] ?? "dev";
+  if (command !== "dev" && command !== "start") {
+    console.error(`Unknown command "${command}". Expected "dev" or "start".`);
+    process.exit(1);
+  }
+
+  const config = readConfig();
+  const environment = createServerEnvironment(config);
+  const port = Number(environment.PORT);
+  const nextBin = require.resolve("next/dist/bin/next", { paths: [__dirname, process.cwd()] });
+  const child = spawn(process.execPath, [nextBin, command, "-H", "0.0.0.0", "-p", String(port)], {
+    stdio: "inherit",
+    env: environment,
+  });
+  child.on("exit", (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    else process.exit(code ?? 0);
+  });
+}
+
+if (require.main === module) main();
+
+module.exports = { DEFAULT_PROJECT_WORKSPACES_ROOT, DEFAULT_WORKSPACE, createServerEnvironment, readConfig };
