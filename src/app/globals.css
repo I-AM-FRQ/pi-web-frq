@@ -491,6 +491,9 @@ select { appearance: auto; background: var(--bg-input); border: 1px solid var(--
 .markdown pre { background: var(--bg-code); border: 1px solid var(--border); overflow-x: auto; padding: 13px; }
 .markdown img { border: 1px solid var(--border); display: block; height: auto; margin: 12px 0; max-height: 70vh; max-width: 100%; object-fit: contain; width: auto; }
 .markdown pre code { background: none; border: 0; padding: 0; }
+.code-block { position: relative; }
+.code-block-copy { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 11px; line-height: 1; padding: 4px 9px; position: absolute; right: 8px; top: 8px; z-index: 1; }
+.code-block-copy:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--accent); }
 .markdown table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }
 .markdown td, .markdown th { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
 .markdown blockquote { border-left: 2px solid var(--accent); color: var(--text-secondary); margin: 14px 0; padding-left: 13px; }

@@ -80,17 +80,14 @@ async function verifiedDirectoryEntries(relativePath: string, root: string): Pro
       if (entry.isSymbolicLink() || (entry.isDirectory() && isIgnoredDirectory(entry.name))) continue;
 
       const childRelativePath = relativePath === "." ? entry.name : `${relativePath}/${entry.name}`;
-      // 无项目会话：隐藏其他项目的工作区目录（避免默认工作区暴露全部项目内容）。
-      if (entry.isDirectory()) {
-        const childProject = await resolveFile(childRelativePath, root);
-        if (await isRestrictedProjectPath(childProject, root)) continue;
-      }
       try {
         const child = await resolveFile(childRelativePath, root);
         const childStatus = await lstat(child);
         if (childStatus.isSymbolicLink()) continue;
         const childType = await stat(child);
         if (!childType.isFile() && !childType.isDirectory()) continue;
+        // 无项目会话：隐藏其他项目的工作区目录（避免默认工作区暴露全部项目内容）。
+        if (childType.isDirectory() && (await isRestrictedProjectPath(child, root))) continue;
         entries.push({
           name: entry.name,
           path: toWorkspaceRelativePath(child, root),
