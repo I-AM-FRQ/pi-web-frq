@@ -31,70 +31,22 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root 'node_modules'))) {
     if ($InstallCode -ne 0) { throw 'npm install failed.' }
 }
 
-# 生产构建：缺失，或源码/配置/依赖比构建产物新时重建，避免更新后继续使用旧 .next。
-$BuildIdPath = Join-Path $Root '.next\BUILD_ID'
-$NeedsBuild = -not (Test-Path -LiteralPath $BuildIdPath)
-if (-not $NeedsBuild) {
-    $BuildTime = (Get-Item -LiteralPath $BuildIdPath).LastWriteTimeUtc
-    $BuildInputs = @(
-        (Join-Path $Root 'src'),
-        (Join-Path $Root 'public'),
-        (Join-Path $Root 'package.json'),
-        (Join-Path $Root 'package-lock.json'),
-        (Join-Path $Root 'next.config.ts'),
-        (Join-Path $Root 'tsconfig.json')
-    )
-    foreach ($InputPath in $BuildInputs) {
-        if (-not (Test-Path -LiteralPath $InputPath)) { continue }
-        $NewerInput = if ((Get-Item -LiteralPath $InputPath).PSIsContainer) {
-            Get-ChildItem -LiteralPath $InputPath -Recurse -File | Where-Object { $_.LastWriteTimeUtc -gt $BuildTime } | Select-Object -First 1
-        } elseif ((Get-Item -LiteralPath $InputPath).LastWriteTimeUtc -gt $BuildTime) {
-            Get-Item -LiteralPath $InputPath
-        }
-        if ($NewerInput) {
-            $NeedsBuild = $true
-            Write-Output "[BUILD] source changed: $($NewerInput.FullName)"
-            break
-        }
-    }
-}
-if ($NeedsBuild) {
-    # 旧服务仍在时，先停止它；否则即使构建完成，端口仍会指向旧 .next。
-    $Existing = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    if ($Existing) {
-        $ServiceProcesses = Get-CimInstance Win32_Process | Where-Object {
-            $_.Name -eq 'node.exe' -and $_.CommandLine -like '*serve.cjs*start*'
-        }
-        if (-not $ServiceProcesses) {
-            throw "Port $Port is occupied by another process. Stop it before updating pi-web-frq."
-        }
-        Write-Output '[RESTART] stopping the old server before rebuilding...'
-        foreach ($ServiceProcess in $ServiceProcesses) {
-            # /T 连同 Next 子进程一起结束，避免父进程停止后旧服务仍占用端口。
-            & taskkill.exe /PID $ServiceProcess.ProcessId /T /F | Out-Null
-        }
-        for ($Attempt = 1; $Attempt -le 10; $Attempt++) {
-            Start-Sleep -Milliseconds 500
-            if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { break }
-        }
-        if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) {
-            throw "The old server did not stop listening on port $Port. Run stop.bat and try again."
-        }
-    }
+# 生产构建
+if (-not (Test-Path -LiteralPath (Join-Path $Root '.next\BUILD_ID'))) {
     Write-Output '[BUILD] npm run build (1-2 min)...'
     Push-Location $Root
     npm run build
     $BuildCode = $LASTEXITCODE
     Pop-Location
     if ($BuildCode -ne 0) { throw 'Build failed.' }
-} else {
-    # 无源码更新时，不重启已运行的服务。
-    $Existing = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    if ($Existing) {
-        Write-Output "[OK] server already running at $Url"
-        Start-Process $Url | Out-Null
-        exit 0
-    }
+}
+
+# 已在运行？直接打开浏览器返回
+$Existing = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+if ($Existing) {
+    Write-Output "[OK] server already running at $Url"
+    Start-Process $Url | Out-Null
+    exit 0
 }
 
 # 启动服务：隐藏窗口、后台运行（日志写 server.log）
