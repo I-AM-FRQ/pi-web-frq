@@ -154,7 +154,7 @@ export async function listWorkspaceDirectory(relativePath = ".", root = workspac
 /**
  * 项目内 bash 工具：cwd 固定为项目根，仅写权限开启时启用。
  * 注意：bash 命令可任意执行（与 pi 内置 bash 一致），cwd 边界不阻止 `cd ..` 等显式越权，
- * 仅限受信任的模型使用；部署到 LAN 时请开启访问令牌。
+ * 仅限受信任的模型/设备使用。
  */
 export function createWorkspaceBashTool(root: string): ToolDefinition {
   // 类型断言：createBashToolDefinition 携带 BashToolDetails 具体泛型，与 customTools 的 ToolDefinition[] 默认泛型对齐。
