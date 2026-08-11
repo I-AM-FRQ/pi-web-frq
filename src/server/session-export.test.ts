@@ -9,7 +9,7 @@ describe("projectSessionExport", () => {
   it("exports only safe visible user and assistant content", () => {
     const content = projectSessionExport(manager([
       { type: "message", message: { role: "user", content: "Review @{README.md}\n\n<<<pi-web:workspace-context:v1 user-chars=18>>>\n\n[Workspace reference: README.md]\nD:\\Program\\agent\\secret.txt\n[End workspace reference]\n<<<pi-web:end-workspace-context:v1>>>", timestamp: 1 } },
-      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "private chain" }, { type: "text", text: "Result at D:\\Program\\agent\\pi\\pi-web-ui\\README.md\nBearer abcdefghijklmnop\napiKey=\"sk-very-secret-token\"\nhttps://example.test/?token=long-secret-token" }], timestamp: 2 } },
+      { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "private chain" }, { type: "text", text: "Result at D:\\Program\\agent\\pi\\pi-web-ui\\README.md\nBearer placeholder-token-123\napiKey=\"placeholder-secret-value\"\nhttps://example.test/?token=placeholder-query-value" }], timestamp: 2 } },
       { type: "message", message: { role: "toolResult", toolName: "workspace_read", content: "tool secret", timestamp: 3 } },
       { type: "compaction", summary: "private summary", timestamp: 4 },
     ]) as never);
@@ -19,8 +19,8 @@ describe("projectSessionExport", () => {
     expect(content).toContain("Bearer [敏感内容已隐藏]");
     expect(content).toContain("apiKey=[敏感内容已隐藏]");
     expect(content).toContain("token=[敏感内容已隐藏]");
-    expect(content).not.toContain("sk-very-secret-token");
-    expect(content).not.toContain("long-secret-token");
+    expect(content).not.toContain("placeholder-secret-value");
+    expect(content).not.toContain("placeholder-query-value");
     expect(content).not.toContain("private chain");
     expect(content).not.toContain("tool secret");
     expect(content).not.toContain("<think>");
