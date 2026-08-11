@@ -31,8 +31,16 @@ describe("Workbench agent resources", () => {
     await resources.setAgentResourceConfiguration({ skills: ["release-check"], plugins: ["echo-plugin"] });
     const paths = await resources.enabledAgentResourcePaths();
     expect(paths.skillPaths).toHaveLength(1);
-    expect(paths.skillInstructions[0]).toContain("Run the release workflow.");
+    // 仅启用 = 只注册（按需加载），不全文注入。
+    expect(paths.forcedSkillInstructions).toHaveLength(0);
     expect(paths.pluginPaths).toHaveLength(1);
+
+    // 强制注入 = 全文写入系统提示。
+    await resources.setAgentResourceConfiguration({ skills: ["release-check"], plugins: ["echo-plugin"], forcedSkills: ["release-check"] });
+    const forced = await resources.enabledAgentResourcePaths();
+    expect(forced.forcedSkillInstructions).toHaveLength(1);
+    expect(forced.forcedSkillInstructions[0]).toContain("Run the release workflow.");
+    expect((await resources.listAgentResources()).skills.find((item) => item.id === "release-check")?.mode).toBe("force");
 
     const { createPiServices } = await import("./pi");
     const services = await createPiServices({ skills: [], plugins: ["echo-plugin"] });
@@ -41,7 +49,8 @@ describe("Workbench agent resources", () => {
     const afterDelete = await resources.deleteAgentResource("skills", "release-check");
     expect(afterDelete.skills.some((item) => item.id === "release-check")).toBe(false);
     expect(afterDelete.plugins).toEqual(expect.arrayContaining([expect.objectContaining({ id: "echo-plugin", enabled: true })]));
-  });
+  // 该测试含真实 TS 插件编译与 createPiServices，全套件并行时可能超过默认 5s 超时。
+  }, 20_000);
 
   it("scans manually configured directories as read-only resources", async () => {
     const resources = await loadResourcesModule();
@@ -58,9 +67,10 @@ describe("Workbench agent resources", () => {
     expect(skill).toMatchObject({ origin: "configured", editable: false, enabled: false });
     expect(plugin).toMatchObject({ origin: "configured", editable: false, enabled: false });
 
-    await resources.setAgentResourceConfiguration({ skills: [skill!.id], plugins: [plugin!.id] });
+    await resources.setAgentResourceConfiguration({ skills: [skill!.id], plugins: [plugin!.id], forcedSkills: [skill!.id] });
     const paths = await resources.enabledAgentResourcePaths();
-    expect(paths.skillInstructions).toContain("---\nname: review-skill\ndescription: Review source code.\n---\n\n# Review\nInspect the requested changes.\n");
+    expect(paths.forcedSkillInstructions).toContain("---\nname: review-skill\ndescription: Review source code.\n---\n\n# Review\nInspect the requested changes.\n");
+    expect((await resources.listAgentResources()).skills.find((item) => item.id === skill!.id)?.mode).toBe("force");
     expect(paths.pluginPaths).toHaveLength(1);
   });
 

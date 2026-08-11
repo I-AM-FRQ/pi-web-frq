@@ -43,6 +43,8 @@ export type AgentResource = {
   content: string;
   origin: "managed" | "default" | "configured";
   editable: boolean;
+  /** 技能注入模式：force = 全文注入系统提示（常驻上下文）；register = 仅注册可读（模型按需加载）。仅技能有效。 */
+  mode?: "force" | "register";
 };
 
 export type AgentResources = {
@@ -83,7 +85,7 @@ export type SessionSummary = {
 export type ConversationItem =
   | { type: "user"; content: string; timestamp: string; id?: string }
   | { type: "thinking"; content: string; timestamp: string }
-  | { type: "tool"; id: string; name: string; label: string; result?: string; isError: boolean; timestamp: string }
+  | { type: "tool"; id: string; name: string; label: string; result?: string; isError: boolean; timestamp: string; details?: SubagentDetails }
   | { type: "assistant"; content: string; timestamp: string; isError: boolean; model?: { provider: string; id: string } }; 
 
 export type SessionTreeNode = {
@@ -133,18 +135,70 @@ export type ApiErrorResponse = {
   error: { code: string; message: string };
 };
 
-export type LiveToolStep = { id: string; name: string; label: string; result?: string; isError: boolean; running: boolean };
+export type LiveToolStep = { id: string; name: string; label: string; result?: string; isError: boolean; running: boolean; details?: SubagentDetails }; 
+
+/** 子代理消息（从扩展 details 的完整 Message[] 简化而来，供前端直接渲染）。 */
+export type SubagentMessageItem =
+  | { role: "user"; text: string }
+  | { role: "assistant"; text?: string; thinking?: string; toolCalls: Array<{ id: string; name: string; args: string }>; stopReason?: string; errorMessage?: string }
+  | { role: "toolResult"; toolName: string; toolCallId?: string; text: string; isError: boolean };
+
+export type SubagentRunResult = {
+  agent: string;
+  agentSource: string;
+  task: string;
+  exitCode: number;
+  messages: SubagentMessageItem[];
+  stderr?: string;
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number; turns: number };
+  model?: string;
+  stopReason?: string;
+  errorMessage?: string;
+  step?: number;
+};
+
+/** subagent 扩展工具结果 details 的简化结构（单/并行/链式三种模式）。 */
+export type SubagentDetails = {
+  mode: "single" | "parallel" | "chain";
+  agentScope?: string;
+  projectAgentsDir?: string | null;
+  results: SubagentRunResult[];
+};
+
+/** 当前可用的子代理 agent 描述（来自 ~/.pi/agent/agents 与项目 .pi/agents）。 */
+export type AgentDescriptor = {
+  name: string;
+  description: string;
+  source: "user" | "project";
+  model?: string;
+  tools?: string[];
+  systemPrompt: string;
+};
+
+/** 侧边栏子代理面板中的一次运行活动（实时或历史）。 */
+export type SubagentActivity = {
+  /** 工具调用 id（历史会话为会话条目 id）。 */
+  id: string;
+  label: string;
+  result?: string;
+  isError: boolean;
+  running: boolean;
+  details: SubagentDetails;
+  /** 所属会话；null 表示新会话尚未落盘。 */
+  sessionId: string | null;
+};
 
 /** 按真实执行顺序排列的实时时间线条目（思考/工具/文本交错出现）。 */
 export type LiveTimelineItem =
-  | { kind: "tool"; id: string; name: string; label: string; result?: string; isError: boolean; running: boolean }
+  | { kind: "tool"; id: string; name: string; label: string; result?: string; isError: boolean; running: boolean; details?: SubagentDetails }
   | { kind: "thinking"; text: string }
   | { kind: "text"; text: string };
 
 export type ChatStreamEvent =
   | { type: "start"; runId: string; sessionId: string; prompt?: string; model?: { provider: string; id: string } }
   | { type: "tool_start"; id: string; name: string; label: string }
-  | { type: "tool_end"; id: string; result: string; isError: boolean }
+  | { type: "tool_update"; id: string; details: SubagentDetails }
+  | { type: "tool_end"; id: string; result: string; isError: boolean; details?: SubagentDetails }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
   | { type: "retry_scheduled"; attempt: number; maxAttempts: number; delayMs: number; message: string }

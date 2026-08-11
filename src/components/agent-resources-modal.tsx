@@ -22,6 +22,7 @@ export function AgentResourcesModal({ kind, onClose, onChanged }: Props) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [newName, setNewName] = useState("");
   const [directory, setDirectory] = useState("");
   const entries = resources[kind];
@@ -64,6 +65,7 @@ export function AgentResourcesModal({ kind, onClose, onChanged }: Props) {
   const saveConfiguration = async (next: AgentResources) => {
     setIsSaving(true);
     setError("");
+    setNotice("");
     try {
       const response = await fetch("/api/resources", {
         method: "PUT",
@@ -71,11 +73,13 @@ export function AgentResourcesModal({ kind, onClose, onChanged }: Props) {
         body: JSON.stringify({
           skills: next.skills.filter((item) => item.enabled).map((item) => item.id),
           plugins: next.plugins.filter((item) => item.enabled).map((item) => item.id),
+          forcedSkills: next.skills.filter((item) => item.enabled && item.mode === "force").map((item) => item.id),
           directories: next.directories,
         }),
       });
       if (!response.ok) throw new Error((await response.json() as { error?: { message?: string } }).error?.message ?? `HTTP ${response.status}`);
       apply(await response.json() as AgentResources);
+      setNotice("已保存并同步到 TUI（pi 命令行）配置；TUI 内执行 /reload 立即生效。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法保存资源配置。");
     } finally {
@@ -86,7 +90,21 @@ export function AgentResourcesModal({ kind, onClose, onChanged }: Props) {
   const toggle = (resource: AgentResource) => {
     const next: AgentResources = {
       ...resources,
-      [kind]: entries.map((item) => item.id === resource.id ? { ...item, enabled: !item.enabled } : item),
+      [kind]: entries.map((item) => {
+        if (item.id !== resource.id) return item;
+        const enabled = !item.enabled;
+        // 停用时同步取消强制注入；启用时默认“仅注册”（省 token）。
+        return { ...item, enabled, ...(item.kind === "skills" ? { mode: enabled ? (item.mode === "force" ? "force" : "register") : undefined } : {}) };
+      }),
+    };
+    void saveConfiguration(next);
+  };
+
+  const toggleForce = (resource: AgentResource) => {
+    if (resource.kind !== "skills" || !resource.enabled) return;
+    const next: AgentResources = {
+      ...resources,
+      skills: resources.skills.map((item) => item.id === resource.id ? { ...item, mode: item.mode === "force" ? "register" : "force" } : item),
     };
     void saveConfiguration(next);
   };
@@ -175,16 +193,17 @@ export function AgentResourcesModal({ kind, onClose, onChanged }: Props) {
           <div className="resource-list">
             {isLoading ? <p>正在加载…</p> : null}
             {!isLoading && entries.length === 0 ? <p>尚未创建{labels[kind]}。</p> : null}
-            {entries.map((item) => <button key={item.id} type="button" className={item.id === selectedId ? "selected" : ""} onClick={() => { setSelectedId(item.id); setContent(item.content); }}><span className={item.enabled ? "resource-state enabled" : "resource-state"}>{item.enabled ? "启用" : "停用"}</span><strong>{item.name}</strong><small>{item.origin === "managed" ? "pi-web-frq" : item.origin === "default" ? "默认目录" : "配置目录"} · {item.description}</small></button>)}
+            {entries.map((item) => <button key={item.id} type="button" className={item.id === selectedId ? "selected" : ""} onClick={() => { setSelectedId(item.id); setContent(item.content); }}><span className={item.enabled ? "resource-state enabled" : "resource-state"}>{item.enabled ? "启用" : "停用"}</span>{item.kind === "skills" && item.mode === "force" ? <span className="resource-state force">强制</span> : null}<strong>{item.name}</strong><small>{item.origin === "managed" ? "pi-web-frq" : item.origin === "default" ? "默认目录" : "配置目录"} · {item.description}</small></button>)}
           </div>
         </aside>
         <section className="resource-editor">
           {selected ? <>
-            <div className="resource-editor-heading"><div><h3>{selected.name}</h3><p>{selected.description}</p></div><label className="resource-toggle"><input type="checkbox" checked={selected.enabled} onChange={() => toggle(selected)} disabled={isSaving} />启用</label></div>
+            <div className="resource-editor-heading"><div><h3>{selected.name}</h3><p>{selected.description}</p></div><label className="resource-toggle"><input type="checkbox" checked={selected.enabled} onChange={() => toggle(selected)} disabled={isSaving} />启用</label>{selected.kind === "skills" && selected.enabled ? <label className="resource-toggle" title="强制注入：全文写入系统提示，常驻每次请求的上下文；仅注册：模型按需读取技能文件（省 Token）"><input type="checkbox" checked={selected.mode === "force"} onChange={() => toggleForce(selected)} disabled={isSaving} />强制注入</label> : null}</div>
             <textarea value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} readOnly={!selected.editable} aria-label={`${selected.name} 内容`} />
             <div className="resource-editor-actions">{selected.editable ? <button type="button" className="resource-delete" onClick={() => void remove()} disabled={isSaving}>删除</button> : <span className="resource-readonly">来自扫描目录，只读。</span>}{selected.editable ? <button type="button" className="modal-save" onClick={() => void saveContent()} disabled={isSaving || content === selected.content}>保存内容</button> : null}</div>
           </> : <p className="resource-empty">选择或新增一个{labels[kind]}。</p>}
           {error ? <p className="provider-status error" role="alert">{error}</p> : null}
+          {notice ? <p className="provider-status ok" role="status">{notice}</p> : null}
         </section>
       </div>
     </section>

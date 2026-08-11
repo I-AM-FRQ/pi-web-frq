@@ -1,5 +1,5 @@
 import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ConversationItem } from "../contracts";
+import type { ConversationItem, SubagentDetails, SubagentMessageItem, SubagentRunResult } from "../contracts";
 import { visibleWorkspacePrompt } from "./file-references";
 import { redactLocalPaths } from "./output-sanitization";
 
@@ -66,6 +66,133 @@ export function toolResultText(value: unknown): string {
   if (content) return content;
   if (result.details !== undefined) return structuredText(result.details);
   return structuredText(value);
+}
+
+// ---- subagent 详情（details）结构化透传 ----
+
+const MAX_SUBAGENT_MESSAGES = 40;
+const MAX_SUBAGENT_TEXT = 3000;
+const MAX_SUBAGENT_TOOL_ARGS = 200;
+const MAX_SUBAGENT_TOOL_CALLS = 20;
+
+function truncateText(text: string, max = MAX_SUBAGENT_TEXT): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…[已截断 ${text.length - max} 字符]`;
+}
+
+function asSingleText(content: unknown): string {
+  const text = asText(content);
+  return truncateText(text);
+}
+
+function asSingleThinking(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts = content
+    .filter((part): part is { type?: unknown; thinking?: unknown } => typeof part === "object" && part !== null)
+    .filter((part) => part.type === "thinking" && typeof part.thinking === "string")
+    .map((part) => part.thinking as string);
+  if (parts.length === 0) return "";
+  return truncateText(parts.join("\n"));
+}
+
+function asToolCalls(content: unknown): Array<{ id: string; name: string; args: string }> {
+  if (!Array.isArray(content)) return [];
+  const calls = content.filter((part): part is { type: "toolCall"; id: string; name: string; arguments?: unknown } =>
+    typeof part === "object" && part !== null && (part as { type?: unknown }).type === "toolCall"
+      && typeof (part as { id?: unknown }).id === "string" && typeof (part as { name?: unknown }).name === "string");
+  return calls.slice(0, MAX_SUBAGENT_TOOL_CALLS).map((part) => {
+    let args = "";
+    try {
+      args = typeof part.arguments === "string" ? part.arguments : JSON.stringify(part.arguments ?? {});
+    } catch {
+      args = "";
+    }
+    return { id: part.id, name: part.name, args: truncateText(args, MAX_SUBAGENT_TOOL_ARGS) };
+  });
+}
+
+function sanitizeMessage(value: unknown): SubagentMessageItem | null {
+  if (typeof value !== "object" || value === null) return null;
+  const message = value as { role?: unknown; content?: unknown; isError?: unknown; toolName?: unknown; toolCallId?: unknown; errorMessage?: unknown; stopReason?: unknown };
+  if (message.role === "user") {
+    const text = asSingleText(message.content);
+    if (!text) return null;
+    return { role: "user", text };
+  }
+  if (message.role === "assistant") {
+    const item: SubagentMessageItem = {
+      role: "assistant",
+      toolCalls: asToolCalls(message.content),
+      ...(typeof message.stopReason === "string" ? { stopReason: message.stopReason } : {}),
+      ...(typeof message.errorMessage === "string" ? { errorMessage: truncateText(message.errorMessage) } : {}),
+    };
+    const thinking = asSingleThinking(message.content);
+    if (thinking) item.thinking = thinking;
+    const text = asSingleText(message.content);
+    if (text) item.text = text;
+    if (!item.thinking && !item.text && item.toolCalls.length === 0) return null;
+    return item;
+  }
+  if (message.role === "toolResult") {
+    const text = asSingleText(message.content);
+    return {
+      role: "toolResult",
+      toolName: typeof message.toolName === "string" ? message.toolName : "tool",
+      text,
+      isError: message.isError === true,
+      ...(typeof message.toolCallId === "string" ? { toolCallId: message.toolCallId } : {}),
+    };
+  }
+  return null;
+}
+
+function sanitizeResult(value: unknown): SubagentRunResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as {
+    agent?: unknown; agentSource?: unknown; task?: unknown; exitCode?: unknown;
+    messages?: unknown; stderr?: unknown; usage?: unknown; model?: unknown; stopReason?: unknown; errorMessage?: unknown; step?: unknown;
+  };
+  if (typeof raw.agent !== "string") return null;
+  const usage = (typeof raw.usage === "object" && raw.usage !== null ? raw.usage : {}) as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const messages = Array.isArray(raw.messages)
+    ? raw.messages.map(sanitizeMessage).filter((item): item is SubagentMessageItem => item !== null).slice(-MAX_SUBAGENT_MESSAGES)
+    : [];
+  return {
+    agent: raw.agent,
+    agentSource: typeof raw.agentSource === "string" ? raw.agentSource : "unknown",
+    task: truncateText(typeof raw.task === "string" ? raw.task : ""),
+    exitCode: num(raw.exitCode),
+    messages,
+    usage: {
+      input: num(usage.input), output: num(usage.output), cacheRead: num(usage.cacheRead),
+      cacheWrite: num(usage.cacheWrite), cost: num(usage.cost), contextTokens: num(usage.contextTokens), turns: num(usage.turns),
+    },
+    ...(typeof raw.stderr === "string" && raw.stderr ? { stderr: truncateText(raw.stderr) } : {}),
+    ...(typeof raw.model === "string" ? { model: raw.model } : {}),
+    ...(typeof raw.stopReason === "string" ? { stopReason: raw.stopReason } : {}),
+    ...(typeof raw.errorMessage === "string" ? { errorMessage: truncateText(raw.errorMessage) } : {}),
+    ...(typeof raw.step === "number" ? { step: raw.step } : {}),
+  };
+}
+
+/**
+ * 将 subagent 扩展的原始 details（含完整 Message[]）转换为可安全渲染的简化结构：
+ * 提取文本/思考/工具调用、限制消息数与文本长度。非 subagent details 返回 null。
+ */
+export function sanitizeSubagentDetails(value: unknown): SubagentDetails | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as { mode?: unknown; agentScope?: unknown; projectAgentsDir?: unknown; results?: unknown };
+  if (raw.mode !== "single" && raw.mode !== "parallel" && raw.mode !== "chain") return null;
+  const results = Array.isArray(raw.results)
+    ? raw.results.map(sanitizeResult).filter((item): item is SubagentRunResult => item !== null)
+    : [];
+  return {
+    mode: raw.mode,
+    results,
+    ...(typeof raw.agentScope === "string" ? { agentScope: raw.agentScope } : {}),
+    ...(typeof raw.projectAgentsDir === "string" ? { projectAgentsDir: raw.projectAgentsDir } : {}),
+  };
 }
 
 export function visibleAssistantText(content: unknown): string {
@@ -186,6 +313,8 @@ export function buildConversationItems(branch: SessionEntry[]): ConversationItem
         if (item && item.type === "tool") {
           item.isError = Boolean(message.isError);
           item.result = toolResultText({ content: message.content, details: message.details });
+          const details = sanitizeSubagentDetails(message.details);
+          if (details) item.details = details;
         }
         pendingTools.delete(message.toolCallId);
       }

@@ -12,6 +12,8 @@ export type WorkbenchSettings = {
   defaultModel: string;
   defaultThinkingLevel: ThinkingLevel | "";
   autoRetry: boolean;
+  /** 执行完成提醒：off=关闭 page=仅页面提示 desktop=仅系统通知 both=前台页面提示+后台系统通知 */
+  completionAlert: "off" | "page" | "desktop" | "both";
 };
 
 export const DEFAULT_SETTINGS: WorkbenchSettings = {
@@ -21,6 +23,7 @@ export const DEFAULT_SETTINGS: WorkbenchSettings = {
   defaultModel: "",
   defaultThinkingLevel: "",
   autoRetry: true,
+  completionAlert: "both",
 };
 
 const STORAGE_KEY = "pi-workbench-settings";
@@ -43,6 +46,7 @@ function storedSettings(): Partial<WorkbenchSettings> {
     if (typeof parsed.defaultModel === "string" && parsed.defaultModel.length <= 200) result.defaultModel = parsed.defaultModel;
     if (typeof parsed.defaultThinkingLevel === "string" && ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(parsed.defaultThinkingLevel)) result.defaultThinkingLevel = parsed.defaultThinkingLevel;
     if (typeof parsed.autoRetry === "boolean") result.autoRetry = parsed.autoRetry;
+    if (parsed.completionAlert === "off" || parsed.completionAlert === "page" || parsed.completionAlert === "desktop" || parsed.completionAlert === "both") result.completionAlert = parsed.completionAlert;
     return result as Partial<WorkbenchSettings>;
   } catch {
     return {};

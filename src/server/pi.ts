@@ -25,6 +25,37 @@ export function invalidateModelCache() {
   modelLoad = null;
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+/**
+ * 手工构造 available_skills 段：pi 的 buildSystemPrompt 仅在工具列表含 "read" 时追加技能列表，
+ * Web 使用 workspace_read，因此在这里自行追加，让模型感知到已启用的技能。
+ */
+function buildAvailableSkillsSection(skills: Array<{ name: string; description: string; path: string }>): string {
+  const lines = [
+    "\n\nThe following skills provide specialized instructions for specific tasks.",
+    "Use the workspace_read tool to load a skill file when the task matches its description.",
+    "",
+    "<available_skills>",
+  ];
+  for (const skill of skills) {
+    lines.push("  <skill>");
+    lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+    lines.push(`    <description>${escapeXml(skill.description)}</description>`);
+    lines.push(`    <location>${escapeXml(skill.path)}</location>`);
+    lines.push("  </skill>");
+  }
+  lines.push("</available_skills>");
+  return lines.join("\n");
+}
+
 export async function createPiServices(resources?: { skills?: string[]; plugins?: string[] }, root = workspace) {
   const paths = await enabledAgentResourcePaths(resources);
   const projectPrompt = await readProjectSystemPrompt(root);
@@ -36,7 +67,8 @@ export async function createPiServices(resources?: { skills?: string[]; plugins?
       additionalSkillPaths: paths.skillPaths,
       additionalExtensionPaths: paths.pluginPaths,
       appendSystemPrompt: [
-        ...paths.skillInstructions.map((instruction) => `Enabled pi-web-frq skill instructions:\n${instruction}`),
+        ...(paths.skillDescriptors.length > 0 ? [buildAvailableSkillsSection(paths.skillDescriptors)] : []),
+        ...paths.forcedSkillInstructions.map((instruction) => `Enabled pi-web-frq skill instructions:\n${instruction}`),
         ...(projectPrompt ? [`Project-specific instructions:\n${projectPrompt}`] : []),
       ],
     },

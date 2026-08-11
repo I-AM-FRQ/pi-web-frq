@@ -166,11 +166,19 @@ export function useChatStream() {
         timeline: [...run.timeline.filter((item) => !(item.kind === "tool" && item.id === event.id)), { kind: "tool", id: event.id, name: event.name, label: event.label, isError: false, running: true }],
       } : run)));
     }
+    if (event.type === "tool_update") {
+      // subagent 等工具的实时进度：合并 details 到对应工具条目。
+      setRuns((current) => current.map((run) => (run.id === id ? {
+        ...run,
+        tools: run.tools.map((tool) => (tool.id === event.id ? { ...tool, details: event.details } : tool)),
+        timeline: run.timeline.map((item) => (item.kind === "tool" && item.id === event.id ? { ...item, details: event.details } : item)),
+      } : run)));
+    }
     if (event.type === "tool_end") {
       setRuns((current) => current.map((run) => (run.id === id ? {
         ...run,
-        tools: run.tools.map((tool) => (tool.id === event.id ? { ...tool, result: event.result, isError: event.isError, running: false } : tool)),
-        timeline: run.timeline.map((item) => (item.kind === "tool" && item.id === event.id ? { ...item, result: event.result, isError: event.isError, running: false } : item)),
+        tools: run.tools.map((tool) => (tool.id === event.id ? { ...tool, result: event.result, isError: event.isError, running: false, ...(event.details ? { details: event.details } : {}) } : tool)),
+        timeline: run.timeline.map((item) => (item.kind === "tool" && item.id === event.id ? { ...item, result: event.result, isError: event.isError, running: false, ...(event.details ? { details: event.details } : {}) } : item)),
       } : run)));
     }
     if (event.type === "text_delta") {

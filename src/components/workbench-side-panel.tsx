@@ -9,7 +9,10 @@ import { WorkspaceGitStatus } from "@/components/workspace-git-status";
 import { WorkspaceTree } from "@/components/workspace-tree";
 import type { WorkspaceGitState } from "@/client/use-workspace-git";
 
-type PanelTab = "files" | "search" | "git" | "session";
+import { AgentDescriptorItem, SubagentActivityItem, isSubagentRunning } from "@/components/subagent-panel";
+import type { AgentDescriptor, SubagentActivity } from "@/contracts";
+
+type PanelTab = "files" | "search" | "git" | "session" | "subagent";
 
 type WorkbenchSidePanelProps = {
   nodes: Record<string, WorkspaceNode>;
@@ -22,6 +25,10 @@ type WorkbenchSidePanelProps = {
   collapsed?: boolean;
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
+  subagents: SubagentActivity[];
+  agents: AgentDescriptor[];
+  agentsLoading: boolean;
+  agentsError: string;
 };
 
 const tabs: Array<{ id: PanelTab; label: string }> = [
@@ -29,6 +36,7 @@ const tabs: Array<{ id: PanelTab; label: string }> = [
   { id: "search", label: "搜索" },
   { id: "git", label: "Git" },
   { id: "session", label: "会话" },
+  { id: "subagent", label: "子代理" },
 ];
 
 const RECENT_FILES_KEY = "pi-workbench-recent-files";
@@ -55,7 +63,7 @@ function formatContext(detail: SessionDetail) {
   return `${formatTokens(context.tokens)} / ${formatTokens(context.contextWindow)}（${context.percent.toFixed(1)}%）`;
 }
 
-export function WorkbenchSidePanel({ nodes, onLoadPath, onOpenFile, git, detail, isLoadingSession, projectId, collapsed, mobileOpen = false, onCloseMobile }: WorkbenchSidePanelProps) {
+export function WorkbenchSidePanel({ nodes, onLoadPath, onOpenFile, git, detail, isLoadingSession, projectId, collapsed, mobileOpen = false, onCloseMobile, subagents, agents, agentsLoading, agentsError }: WorkbenchSidePanelProps) {
   const [tab, setTab] = useState<PanelTab>("files");
   const [query, setQuery] = useState("");
   const [searchMode, setSearchMode] = useState<WorkspaceSearchMode>("name");
@@ -143,6 +151,47 @@ export function WorkbenchSidePanel({ nodes, onLoadPath, onOpenFile, git, detail,
               <div><dt>成本</dt><dd>US${detail.usage.cost.toFixed(4)}</dd></div>
               <div><dt>更新</dt><dd>{new Date(detail.session.updatedAt).toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" })}</dd></div>
             </dl> : null}
+          </section>
+        ) : null}
+        {tab === "subagent" ? (
+          <section className="subagent-panel" aria-labelledby="subagent-panel-heading">
+            <h3 id="subagent-panel-heading">运行活动</h3>
+            {subagents.length === 0 ? <p className="tree-status">尚无子代理调用。让主模型使用 subagent 工具后，这里会实时显示每个子代理的对话过程。</p> : null}
+            {(() => {
+              const running = subagents.filter((activity) => isSubagentRunning(activity));
+              const completed = subagents.filter((activity) => !isSubagentRunning(activity));
+              return (
+                <>
+                  {running.length > 0 ? (
+                    <section className="subagent-group" aria-labelledby="subagent-group-running">
+                      <h4 id="subagent-group-running">运行中</h4>
+                      <div className="subagent-activities">
+                        {running.map((activity) => <SubagentActivityItem key={activity.id} activity={activity} />)}
+                      </div>
+                    </section>
+                  ) : null}
+                  {completed.length > 0 ? (
+                    <details className="subagent-group subagent-group-collapsible">
+                      {/* 「完成」栏目默认折叠，避免完成的活动条目占满面板；点击标题展开。 */}
+                      <summary>
+                        完成
+                        <span className="subagent-group-count">{completed.length}</span>
+                      </summary>
+                      <div className="subagent-activities">
+                        {completed.map((activity) => <SubagentActivityItem key={activity.id} activity={activity} />)}
+                      </div>
+                    </details>
+                  ) : null}
+                </>
+              );
+            })()}
+            <h3>可用子代理</h3>
+            {agentsLoading ? <p className="tree-status">正在读取…</p> : null}
+            {agentsError ? <p className="tree-status error">{agentsError}</p> : null}
+            {!agentsLoading && !agentsError && agents.length === 0 ? <p className="tree-status">未发现 agent 定义（~/.pi/agent/agents/*.md）。</p> : null}
+            <div className="agent-descriptors">
+              {agents.map((agent) => <AgentDescriptorItem key={`${agent.source}:${agent.name}`} agent={agent} />)}
+            </div>
           </section>
         ) : null}
       </div>

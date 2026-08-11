@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep as pathSep } from "node:path";
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 import { workspace } from "@/server/workspace";
 
@@ -19,6 +19,8 @@ export type AgentResource = {
   content: string;
   origin: ResourceOrigin;
   editable: boolean;
+  /** 技能注入模式：force = 全文注入系统提示；register = 仅注册按需加载。仅技能有效。 */
+  mode?: "force" | "register";
 };
 
 export type AgentResources = {
@@ -30,6 +32,8 @@ export type AgentResources = {
 type ResourceConfig = {
   enabledSkills: string[];
   enabledPlugins: string[];
+  /** 启用技能中“强制注入”的子集（全文注入系统提示）；其余启用技能仅注册、按需加载。 */
+  forcedSkillIds: string[];
   skillDirectories: string[];
   pluginDirectories: string[];
 };
@@ -40,7 +44,10 @@ const RESOURCE_ROOT = process.env.PI_WEB_RESOURCES_DIR || join(homedir(), ".pi",
 const SKILLS_ROOT = join(RESOURCE_ROOT, "skills");
 const PLUGINS_ROOT = join(RESOURCE_ROOT, "plugins");
 const CONFIG_PATH = join(RESOURCE_ROOT, "resources.json");
-const EMPTY_CONFIG: ResourceConfig = { enabledSkills: [], enabledPlugins: [], skillDirectories: [], pluginDirectories: [] };
+// TUI（pi 命令行）的全局设置：skills / extensions 数组支持 "!模式" 排除自动发现的资源。
+// Web 禁用技能/插件时自动同步该文件，TUI 执行 /reload（或新会话）后生效。
+const AGENT_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+const EMPTY_CONFIG: ResourceConfig = { enabledSkills: [], enabledPlugins: [], forcedSkillIds: [], skillDirectories: [], pluginDirectories: [] };
 let writeQueue: Promise<void> = Promise.resolve();
 
 function rootFor(kind: AgentResourceKind) {
@@ -91,7 +98,7 @@ async function ensureRoots() {
 function normalizeConfig(value: unknown): ResourceConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return { ...EMPTY_CONFIG };
   const data = value as Record<string, unknown>;
-  const list = (key: "enabledSkills" | "enabledPlugins") => Array.isArray(data[key])
+  const list = (key: "enabledSkills" | "enabledPlugins" | "forcedSkillIds") => Array.isArray(data[key])
     ? [...new Set(data[key].filter((entry): entry is string => typeof entry === "string" && RESOURCE_ID.test(entry)))].slice(0, 100)
     : [];
   const directories = (key: "skillDirectories" | "pluginDirectories") => Array.isArray(data[key])
@@ -100,6 +107,7 @@ function normalizeConfig(value: unknown): ResourceConfig {
   return {
     enabledSkills: list("enabledSkills"),
     enabledPlugins: list("enabledPlugins"),
+    forcedSkillIds: list("forcedSkillIds"),
     skillDirectories: directories("skillDirectories"),
     pluginDirectories: directories("pluginDirectories"),
   };
@@ -112,6 +120,86 @@ async function readConfig(): Promise<ResourceConfig> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...EMPTY_CONFIG };
     throw error;
   }
+}
+
+// ---- 与 TUI（pi 命令行）的资源排除同步（技能 + 插件） ----
+
+/**
+ * 读 ~/.pi/agent/settings.json 的指定键（skills / extensions）数组。
+ */
+async function readAgentSettingsList(key: "skills" | "extensions"): Promise<string[]> {
+  try {
+    const raw = JSON.parse(await readFile(AGENT_SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+    return Array.isArray(raw[key]) ? raw[key].filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 将 default 来源技能/插件的启用状态同步到 TUI 的 settings.json：
+ * - 禁用的资源 → 确保 "!模式" 在对应数组中（TUI 自动发现时排除）
+ * - 启用的资源 → 移除对应 "!模式" 条目
+ * 保留用户手动添加的其他条目（普通路径、非 Web 管理的排除模式）。
+ * 测试环境（PI_WEB_RESOURCES_DIR 被设置）跳过，避免污染真实用户配置。
+ */
+async function syncResourceExclusionsToTui(groups: Array<{ key: "skills" | "extensions"; items: Array<{ pattern: string; enabled: boolean }> }>): Promise<void> {
+  if (process.env.PI_WEB_RESOURCES_DIR) return;
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(await readFile(AGENT_SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+  } catch {
+    settings = {};
+  }
+  let changed = false;
+  for (const group of groups) {
+    const current = Array.isArray(settings[group.key]) ? (settings[group.key] as unknown[]) : [];
+    const managed = new Set(group.items.map((item) => "!" + item.pattern));
+    const next: string[] = [];
+    for (const entry of current) {
+      if (typeof entry !== "string") continue;
+      if (entry.startsWith("!") && managed.has(entry)) {
+        const item = group.items.find((candidate) => "!" + candidate.pattern === entry);
+        if (item && item.enabled) {
+          changed = true; // 已启用 → 移除排除
+          continue;
+        }
+      }
+      next.push(entry);
+    }
+    for (const item of group.items) {
+      if (!item.enabled && !next.includes("!" + item.pattern)) {
+        next.push("!" + item.pattern);
+        changed = true;
+      }
+    }
+    settings[group.key] = [...new Set(next)];
+  }
+  if (!changed) return;
+  await writeFile(AGENT_SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf8");
+}
+
+/** 计算要同步到 TUI 的技能/插件排除项（default 来源，即 ~/.pi/agent 下自动发现的）。 */
+function buildTuiExclusions(resources: Awaited<ReturnType<typeof indexedResources>>) {
+  const agentDir = join(homedir(), ".pi", "agent");
+  return [
+    {
+      key: "skills" as const,
+      items: resources.skills
+        .filter((item) => item.origin === "default")
+        .map((item) => ({ pattern: basename(dirname(item.path)), enabled: item.enabled })),
+    },
+    {
+      key: "extensions" as const,
+      items: resources.plugins
+        .filter((item) => item.origin === "default")
+        .map((item) => ({ pattern: toPosixRelative(agentDir, item.path), enabled: item.enabled })),
+    },
+  ];
+}
+
+function toPosixRelative(base: string, target: string): string {
+  return relative(base, target).split(pathSep).join("/");
 }
 
 async function writeConfig(config: ResourceConfig): Promise<void> {
@@ -186,6 +274,7 @@ async function indexedSkills(config: ResourceConfig): Promise<IndexedResource[]>
         content: await readFile(path, "utf8"),
         origin: source.origin,
         editable: source.origin === "managed",
+        mode: config.enabledSkills.includes(id) ? (config.forcedSkillIds.includes(id) ? "force" : "register") : undefined,
         path,
       });
     }
@@ -248,6 +337,7 @@ function publicResources(resources: IndexedResource[]): AgentResource[] {
     content: resource.content,
     origin: resource.origin,
     editable: resource.editable,
+    ...(resource.kind === "skills" && resource.mode ? { mode: resource.mode } : {}),
   }));
 }
 
@@ -274,19 +364,30 @@ export async function enabledAgentResourcePaths(selection?: { skills?: string[];
   const resources = await indexedResources(config);
   const skills = resources.skills.filter((item) => selectedSkills.has(item.id));
   return {
+    // 所有启用技能：注册为 available_skills（模型按需 read）
     skillPaths: skills.map((item) => item.path),
-    skillInstructions: skills.map((item) => item.content),
+    // 技能元数据（name/description/path）：用于在系统提示中手工构造 available_skills 段。
+    // pi 的 buildSystemPrompt 只在工具列表包含 "read" 时才追加该段，而 Web 使用 workspace_read，
+    // 因此需要由 Web 自行追加，否则模型完全感知不到已启用的技能。
+    skillDescriptors: skills.map((item) => ({ name: item.name, description: item.description, path: item.path })),
+    // 仅“强制注入”技能：全文注入系统提示（常驻上下文）
+    forcedSkillInstructions: skills.filter((item) => item.mode === "force").map((item) => item.content),
     pluginPaths: resources.plugins.filter((item) => selectedPlugins.has(item.id)).map((item) => item.path),
   };
 }
 
-export async function setAgentResourceConfiguration(value: { skills: string[]; plugins: string[]; directories?: { skills?: string[]; plugins?: string[] } }) {
+export async function setAgentResourceConfiguration(value: { skills: string[]; plugins: string[]; forcedSkills?: string[]; directories?: { skills?: string[]; plugins?: string[] } }) {
   const skills = [...new Set(value.skills.map(assertResourceId))].slice(0, 100);
   const plugins = [...new Set(value.plugins.map(assertResourceId))].slice(0, 100);
+  // 强制注入列表必须是已启用技能的子集。
+  const forcedSkills = [...new Set((value.forcedSkills ?? []).map(assertResourceId).filter((id) => skills.includes(id)))].slice(0, 100);
   const previous = await readConfig();
   const skillDirectories = value.directories?.skills === undefined ? previous.skillDirectories : await configuredDirectories(value.directories.skills);
   const pluginDirectories = value.directories?.plugins === undefined ? previous.pluginDirectories : await configuredDirectories(value.directories.plugins);
-  await serializeWrite(() => writeConfig({ enabledSkills: skills, enabledPlugins: plugins, skillDirectories, pluginDirectories }));
+  await serializeWrite(() => writeConfig({ enabledSkills: skills, enabledPlugins: plugins, forcedSkillIds: forcedSkills, skillDirectories, pluginDirectories }));
+  // 同步 default 来源技能的启用/禁用到 TUI settings.json（!技能名 排除）。
+  const indexed = await indexedResources({ ...(await readConfig()), enabledSkills: skills, enabledPlugins: plugins, forcedSkillIds: forcedSkills, skillDirectories, pluginDirectories });
+  await syncResourceExclusionsToTui(buildTuiExclusions(indexed));
   return listAgentResources();
 }
 
@@ -333,6 +434,7 @@ export async function deleteAgentResource(kind: AgentResourceKind, name: string)
       ...config,
       enabledSkills: config.enabledSkills.filter((item) => item !== id),
       enabledPlugins: config.enabledPlugins.filter((item) => item !== id),
+      forcedSkillIds: config.forcedSkillIds.filter((item) => item !== id),
     });
   });
   return listAgentResources();

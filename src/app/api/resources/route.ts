@@ -33,16 +33,19 @@ export async function PUT(request: NextRequest) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return error("Request body is invalid.");
   const data = body as Record<string, unknown>;
   const directories = data.directories;
+  const forcedSkills = data.forcedSkills;
   if (!Array.isArray(data.skills) || !Array.isArray(data.plugins) || data.skills.some((item) => typeof item !== "string") || data.plugins.some((item) => typeof item !== "string")
+    || (forcedSkills !== undefined && (!Array.isArray(forcedSkills) || forcedSkills.some((item) => typeof item !== "string")))
     || (directories !== undefined && (typeof directories !== "object" || directories === null || Array.isArray(directories)
       || !Array.isArray((directories as { skills?: unknown }).skills) || !Array.isArray((directories as { plugins?: unknown }).plugins)
       || (directories as { skills: unknown[] }).skills.some((item) => typeof item !== "string") || (directories as { plugins: unknown[] }).plugins.some((item) => typeof item !== "string")))) {
-    return error("skills, plugins, and directories must be string arrays.");
+    return error("skills, plugins, forcedSkills, and directories must be string arrays.");
   }
   try {
     return NextResponse.json(await setAgentResourceConfiguration({
       skills: data.skills,
       plugins: data.plugins,
+      ...(forcedSkills !== undefined ? { forcedSkills: forcedSkills as string[] } : {}),
       directories: directories as { skills: string[]; plugins: string[] } | undefined,
     }), { headers: NO_STORE });
   } catch (caught) {

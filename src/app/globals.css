@@ -336,7 +336,7 @@ select { appearance: auto; background: var(--bg-input); border: 1px solid var(--
 .workbench-side-header p { color: var(--text-faint); font-size: 10px; letter-spacing: 0.05em; margin: 0 0 4px; }
 .workbench-side-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
 .workbench-side-header > span { border: 1px solid var(--border); border-radius: 5px; color: var(--success); font-size: 10px; padding: 3px 7px; }
-.workbench-side-tabs { border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(4, 1fr); padding: 6px 8px; gap: 4px; }
+.workbench-side-tabs { border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 8px; gap: 4px; }
 .workbench-side-tabs button { background: transparent; border: 0; border-radius: 6px; color: var(--text-faint); font-size: 11px; font-weight: 500; padding: 8px 2px; position: relative; }
 .workbench-side-tabs button:hover { background: var(--bg-raised); color: var(--text); }
 .workbench-side-tabs button.selected { background: var(--bg-raised); color: var(--accent); }
@@ -535,6 +535,87 @@ select { appearance: auto; background: var(--bg-input); border: 1px solid var(--
   50% { content: ".."; }
   75% { content: "..."; }
 }
+/* ============ 执行完成提醒 ============ */
+.completion-toasts {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  left: 50%;
+  pointer-events: none;
+  position: fixed;
+  top: 22px;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px));
+  z-index: 60;
+}
+.completion-toast {
+  align-items: flex-start;
+  animation: completion-toast-in 0.22s ease-out;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--success);
+  border-radius: 10px;
+  box-shadow: var(--shadow-modal);
+  color: var(--text);
+  display: flex;
+  gap: 10px;
+  max-width: 100%;
+  padding: 10px 12px;
+  pointer-events: auto;
+  position: relative;
+  width: 100%;
+}
+.completion-toast.error { border-left-color: var(--danger); }
+.completion-toast-icon {
+  align-items: center;
+  background: var(--success);
+  border-radius: 50%;
+  color: var(--bg);
+  display: flex;
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  height: 20px;
+  justify-content: center;
+  line-height: 1;
+  margin-top: 1px;
+  width: 20px;
+}
+.completion-toast.error .completion-toast-icon { background: var(--danger); }
+.completion-toast-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.completion-toast-body strong { font-size: 13px; line-height: 1.4; }
+.completion-toast-detail {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.completion-toast-close {
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex: none;
+  font-size: 14px;
+  line-height: 1;
+  padding: 3px 5px;
+}
+.completion-toast-close:hover { background: var(--bg-raised); color: var(--text); }
+@keyframes completion-toast-in {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @keyframes command-notice-in {
   from { opacity: 0; transform: translate(-50%, 10px); }
   to { opacity: 1; transform: translate(-50%, 0); }
@@ -1201,3 +1282,121 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
   .global-settings-modal > footer { padding: 12px 16px calc(12px + var(--safe-bottom)); }
   .global-settings-modal > footer .modal-cancel { font-size: 13px; min-height: 44px; padding: 10px 24px; }
 }
+
+/* ===== 子代理面板（右侧工作台 · 子代理标签页） ===== */
+.subagent-panel { padding-top: 15px; }
+.subagent-panel > h3 { color: var(--text); display: block; font-size: 12px; font-weight: 600; margin: 16px 0 10px; }
+.subagent-panel > h3:first-child { margin-top: 0; }
+
+.subagent-activities, .agent-descriptors { display: flex; flex-direction: column; gap: 6px; }
+
+.subagent-activity { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.subagent-activity.failed { border-color: var(--error); }
+.subagent-activity.running { border-color: var(--accent); }
+.subagent-activity-trigger { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.subagent-activity-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.subagent-activity-body { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+
+.subagent-run { border: 1px solid var(--border); border-radius: 8px; background: var(--background); overflow: hidden; }
+.subagent-run.failed { border-color: var(--error); }
+.subagent-run.running { border-color: var(--accent); }
+.subagent-run-header { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 12px; flex-wrap: wrap; }
+.subagent-run-header strong { font-size: 13px; }
+.subagent-run-icon { display: inline-flex; }
+.subagent-run-source, .subagent-run-step, .subagent-run-model { color: var(--muted); font-size: 11px; }
+.subagent-run-model { font-family: var(--font-mono); }
+.subagent-run-status { color: var(--accent); font-size: 11px; margin-left: auto; }
+.subagent-run-status.failed { color: var(--error); }
+
+.subagent-task { display: flex; gap: 8px; padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12px; }
+.subagent-task-body { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+
+
+
+
+
+
+
+
+
+.subagent-thinking { margin: 0 0 6px; }
+.subagent-thinking summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.subagent-thinking pre { margin: 4px 0 0; padding: 6px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
+
+.subagent-toolcalls { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.subagent-toolcall { display: flex; flex-direction: column; gap: 2px; }
+.subagent-toolcall code { color: var(--accent); font-size: 11px; }
+.subagent-toolcall pre { margin: 0; padding: 4px 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto; }
+
+.subagent-msg.tool-result .subagent-toolname { color: var(--muted); font-size: 11px; }
+.subagent-msg.tool-result pre { margin: 2px 0 0; padding: 4px 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+
+.subagent-error { color: var(--error); font-size: 12px; padding: 6px 10px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.subagent-empty { color: var(--muted); font-size: 12px; padding: 8px 10px; margin: 0; }
+.subagent-run-usage { padding: 6px 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+
+.agent-descriptor { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.agent-descriptor-trigger { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.agent-descriptor-trigger strong { font-size: 13px; }
+.agent-descriptor-source { color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.agent-descriptor-model { margin-left: auto; color: var(--muted); font-size: 11px; font-family: var(--font-mono); }
+.agent-descriptor-body { border-top: 1px solid var(--border); padding: 8px 10px; font-size: 12px; }
+.agent-descriptor-desc { margin: 0 0 6px; color: var(--text); }
+.agent-descriptor-tools { margin: 0 0 6px; color: var(--muted); font-size: 11px; }
+.agent-descriptor-prompt summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.agent-descriptor-prompt pre { margin: 4px 0 0; padding: 6px 8px; background: var(--background); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
+
+/* ===== 子代理对话流（与主对话同款渲染） ===== */
+.subagent-transcript { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+.subagent-transcript .user-message { margin-bottom: 0; }
+.subagent-transcript .user-message .message-body { max-width: 100%; font-size: 13px; }
+.subagent-transcript .assistant-reply { max-width: 100%; padding-left: 12px; }
+.subagent-transcript .assistant-reply.failed { border-left-color: var(--error); }
+.subagent-transcript .execution-collapse { margin-bottom: 0; }
+.subagent-transcript .codex-tool-step { max-width: 100%; }
+
+.subagent-task { display: flex; gap: 8px; padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.subagent-task-body { min-width: 0; overflow-wrap: anywhere; }
+.subagent-task-body .markdown { font-size: 12px; }
+
+.subagent-transcript .thinking-content { margin: 0; max-width: 100%; }
+
+/* 运行活动分组栏目（运行中 / 完成） */
+.subagent-group { margin-bottom: 12px; }
+.subagent-group > h4 { color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; margin: 0 0 6px; }
+
+/* 完成栏目：默认折叠的可点击标题 + 数量徽标 */
+.subagent-group-collapsible summary {
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 2px 0;
+  user-select: none;
+  width: max-content;
+}
+.subagent-group-collapsible summary::-webkit-details-marker { display: none; }
+.subagent-group-collapsible summary::before { content: "›"; display: inline-block; margin-right: 6px; transition: transform 0.15s ease; }
+.subagent-group-collapsible[open] summary::before { transform: rotate(90deg); }
+.subagent-group-collapsible summary:hover { color: var(--text-secondary); }
+.subagent-group-count {
+  background: var(--bg-raised);
+  border-radius: 8px;
+  color: var(--text-faint);
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  margin-left: 6px;
+  padding: 3px 6px;
+  vertical-align: middle;
+}
+
+/* 技能强制注入标记 */
+.resource-state.force { background: color-mix(in srgb, var(--accent) 18%, var(--bg-raised)); color: var(--accent); }
+
+/* 资源配置保存成功提示 */
+.provider-status.ok { color: var(--success); }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { projectSessionConversation, visibleAssistantText } from "./session-projection";
+import { projectSessionConversation, sanitizeSubagentDetails, visibleAssistantText } from "./session-projection";
 import { expandWorkspaceReferences } from "./file-references";
 
 describe("projectSessionConversation", () => {
@@ -250,5 +250,82 @@ describe("projectSessionConversation", () => {
       truncated: false,
       nextOffset: null,
     });
+  });
+});
+
+describe("sanitizeSubagentDetails", () => {
+  it("extracts simplified messages from raw subagent details", () => {
+    
+    const details = sanitizeSubagentDetails({
+      mode: "single",
+      agentScope: "user",
+      results: [{
+        agent: "实现者",
+        agentSource: "user",
+        task: "回答 1+1",
+        exitCode: 0,
+        model: "deepseek-v4-flash",
+        stopReason: "stop",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "Task: 回答 1+1" }], timestamp: 1 },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "简单任务" },
+              { type: "text", text: "答案是 2" },
+              { type: "toolCall", id: "c1", name: "bash", arguments: { command: "echo hi" } },
+            ],
+            timestamp: 2,
+          },
+          { role: "toolResult", toolName: "bash", toolCallId: "c1", content: [{ type: "text", text: "hi" }], isError: false, timestamp: 3 },
+        ],
+        usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 500, turns: 1 },
+      }],
+    });
+    expect(details).toEqual({
+      mode: "single",
+      agentScope: "user",
+      results: [{
+        agent: "实现者",
+        agentSource: "user",
+        task: "回答 1+1",
+        exitCode: 0,
+        model: "deepseek-v4-flash",
+        stopReason: "stop",
+        messages: [
+          { role: "user", text: "Task: 回答 1+1" },
+          { role: "assistant", thinking: "简单任务", text: "答案是 2", toolCalls: [{ id: "c1", name: "bash", args: '{"command":"echo hi"}' }] },
+          { role: "toolResult", toolName: "bash", toolCallId: "c1", text: "hi", isError: false },
+        ],
+        usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 500, turns: 1 },
+      }],
+    });
+  });
+
+  it("truncates long text and many messages", () => {
+    
+    const longText = "x".repeat(5000);
+    const details = sanitizeSubagentDetails({
+      mode: "single",
+      results: [{
+        agent: "a",
+        agentSource: "user",
+        task: longText,
+        exitCode: -1,
+        messages: Array.from({ length: 50 }, (_, index) => ({ role: "user", content: [{ type: "text", text: `m${index}` }] })),
+        usage: {},
+      }],
+    });
+    const result = details!.results[0];
+    expect(result.task.length).toBeLessThan(5000);
+    expect(result.task).toContain("已截断");
+    expect(result.messages.length).toBeLessThanOrEqual(40);
+  });
+
+  it("returns null for non-subagent details", () => {
+    
+    expect(sanitizeSubagentDetails(undefined)).toBeNull();
+    expect(sanitizeSubagentDetails({ mode: "other", results: [] })).toBeNull();
+    expect(sanitizeSubagentDetails({ mode: "parallel", results: "nope" })).toEqual({ mode: "parallel", results: [] });
   });
 });

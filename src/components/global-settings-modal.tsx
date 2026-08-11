@@ -49,6 +49,13 @@ const thinkingLevels: Array<{ value: ThinkingLevel | ""; label: string }> = [
   { value: "max", label: "最大" },
 ];
 
+const completionAlertOptions: Array<{ value: "off" | "page" | "desktop" | "both"; label: string }> = [
+  { value: "off", label: "关闭" },
+  { value: "page", label: "仅页面" },
+  { value: "desktop", label: "仅系统通知" },
+  { value: "both", label: "两者" },
+];
+
 const sections: Array<{ id: SettingsSectionId; label: string; icon: ReactNode }> = [
   {
     id: "system",
@@ -310,6 +317,10 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
           <div className="settings-row">
             <div><strong>自动重试</strong><span>服务暂态错误（如 503）时由 Pi 自动重试</span></div>
             <button type="button" role="switch" aria-checked={settings.autoRetry} className={`settings-switch${settings.autoRetry ? " on" : ""}`} onClick={() => patch({ autoRetry: !settings.autoRetry })}><i aria-hidden="true" /><span>{settings.autoRetry ? "开" : "关"}</span></button>
+          </div>
+          <div className="settings-row">
+            <div><strong>执行完成提醒</strong><span>每次任务结束后弹出提示；切到后台时改用系统通知</span></div>
+            <Segmented options={completionAlertOptions} value={settings.completionAlert} onChange={(next) => patch({ completionAlert: next })} ariaLabel="执行完成提醒" />
           </div>
         </div>
       </div>

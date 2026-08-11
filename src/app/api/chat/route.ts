@@ -11,7 +11,7 @@ import { assignSessionToProject } from "@/server/projects";
 import { branchPersistentSession, invalidateSessionIndex, SessionEntryNotFoundError, SessionNotFoundError } from "@/server/sessions";
 import { createProjectPersistentSession, openProjectPersistentSession, projectIdForSession, workspaceForProject, workspaceForSession } from "@/server/session-workspaces";
 import { expandWorkspaceReferences } from "@/server/file-references";
-import { toolResultText, toolStepLabel } from "@/server/session-projection";
+import { toolResultText, toolStepLabel, sanitizeSubagentDetails } from "@/server/session-projection";
 import { AttachmentValidationError, storeImageAttachments } from "@/server/attachments";
 import { SSE_HEADERS, sseEvent } from "@/server/sse";
 
@@ -286,8 +286,22 @@ export async function POST(request: NextRequest) {
         if (event.type === "tool_execution_start") {
           publishActiveChatRunEvent(sessionId, { type: "tool_start", id: event.toolCallId, name: event.toolName, label: toolStepLabel(event.toolName, event.args) });
         }
+        if (event.type === "tool_execution_update") {
+          // subagent 等工具通过 partialResult.details 实时推送进度；转发为 tool_update 供前端渲染。
+          const details = sanitizeSubagentDetails((event.partialResult as { details?: unknown } | undefined)?.details);
+          if (details) {
+            publishActiveChatRunEvent(sessionId, { type: "tool_update", id: event.toolCallId, details });
+          }
+        }
         if (event.type === "tool_execution_end") {
-          publishActiveChatRunEvent(sessionId, { type: "tool_end", id: event.toolCallId, result: toolResultText(event.result), isError: event.isError });
+          const details = sanitizeSubagentDetails((event.result as { details?: unknown } | undefined)?.details);
+          publishActiveChatRunEvent(sessionId, {
+            type: "tool_end",
+            id: event.toolCallId,
+            result: toolResultText(event.result),
+            isError: event.isError,
+            ...(details ? { details } : {}),
+          });
         }
         if (event.type === "auto_retry_start") {
           publishActiveChatRunEvent(sessionId, {

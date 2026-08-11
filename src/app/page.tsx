@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChatStream } from "@/client/use-chat-stream";
+import { useSubagentActivity } from "@/client/use-subagent-activity";
+import { useCompletionNotifier } from "@/client/use-completion-notifier";
+import { CompletionToast } from "@/components/completion-toast";
 import { useSessions } from "@/client/use-sessions";
 import { useWorkspaceTree } from "@/client/use-workspace-tree";
 import { useWorkspaceGit } from "@/client/use-workspace-git";
@@ -25,6 +28,22 @@ import type { AgentResources, ChatImage, ModelDescriptor, SessionContextSummary,
 type RunConfigTab = "skills" | "plugins";
 
 const LAST_MODEL_KEY = "pi-web-frq-last-model";
+
+const THINKING_ORDER: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** 在模型支持的档位中取与请求档位最接近的一个（按强度顺序，取距离最近的）。 */
+function nearestThinkingLevel(requested: ThinkingLevel, supported: ThinkingLevel[]): ThinkingLevel {
+  if (supported.length === 0) return "off";
+  if (supported.includes(requested)) return requested;
+  const ri = THINKING_ORDER.indexOf(requested);
+  let best = supported[0];
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const candidate of supported) {
+    const dist = Math.abs(THINKING_ORDER.indexOf(candidate) - ri);
+    if (dist < bestDist) { bestDist = dist; best = candidate; }
+  }
+  return best;
+}
 
 export default function Home() {
   const [models, setModels] = useState<ModelDescriptor[]>([]);
@@ -77,9 +96,11 @@ export default function Home() {
   const chat = useChatStream();
   const sessions = useSessions();
   const { settings } = useSettings();
+  const { toasts, dismissToast } = useCompletionNotifier(chat.runs, settings);
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
   const selectedProjectId = sessions.selectedProjectId && sessions.projects.some((project) => project.id === sessions.selectedProjectId) ? sessions.selectedProjectId : null;
+  const subagents = useSubagentActivity(chat.runs, sessions.detail, selectedProjectId);
   const workspace = useWorkspaceTree(selectedProjectId);
   const git = useWorkspaceGit(selectedProjectId);
   // 会话模型优先：用户未手动改过模型时，跟随当前会话记录的模型（刷新后保持一致）；
@@ -97,7 +118,8 @@ export default function Home() {
   const contextThinkingLevel = sessions.selectedSessionId && sessions.detail?.session.id === sessions.selectedSessionId && sessions.detail.context?.thinkingLevel;
   const requestedThinkingLevel: ThinkingLevel | "auto" = sessionThinkingLevels[thinkingKey] ?? (!sessions.selectedSessionId && settings.defaultThinkingLevel ? settings.defaultThinkingLevel : (contextThinkingLevel && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(contextThinkingLevel) ? contextThinkingLevel as ThinkingLevel : "auto"));
   const recommendedThinkingLevel = selectedModel?.thinkingLevels.includes("high") ? "high" : selectedModel?.thinkingLevels.find((level) => level !== "off") ?? "off";
-  const thinkingLevel = requestedThinkingLevel === "auto" ? recommendedThinkingLevel : selectedModel?.thinkingLevels.includes(requestedThinkingLevel) ? requestedThinkingLevel : recommendedThinkingLevel;
+  // 用户选择的档位（含模型不支持的）：提交时映射为支持列表中最接近的档位运行
+  const thinkingLevel = requestedThinkingLevel === "auto" ? recommendedThinkingLevel : nearestThinkingLevel(requestedThinkingLevel, selectedModel?.thinkingLevels ?? []);
 
   const loadModels = useCallback(async () => {
     modelLoadControllerRef.current?.abort();
@@ -488,6 +510,7 @@ export default function Home() {
         {sessions.error ? <p className="page-error" role="alert">{sessions.error}</p> : null}
         {commandBusy ? <p className="command-notice busy" role="status">正在执行 /{commandBusy} …</p> : null}
         {commandNotice ? <p className={`command-notice${commandNotice.isError ? " error" : ""}`} role={commandNotice.isError ? "alert" : "status"}>{commandNotice.message}</p> : null}
+        <CompletionToast toasts={toasts} onDismiss={dismissToast} />
         <ConversationView
           conversation={visibleConversation}
           pendingPrompt={activeRun?.pendingPrompt ?? ""}
@@ -508,7 +531,7 @@ export default function Home() {
           runReplay={activeRun?.replay}
         />
         {previewIsReadOnly ? <p className="branch-notice">正在只读查看历史节点。请选择“从此继续”后再发送消息。</p> : null}
-        <ChatComposer key={`${selectedProjectId ?? "default"}:${sessions.selectedSessionId ?? "new"}:${branchFromEntryId ?? "active"}`} value={prompt} projectId={selectedProjectId} models={models} modelKey={effectiveModelKey} onModelChange={(nextModelKey) => { const nextModel = models.find((model) => `${model.provider}:${model.id}` === nextModelKey); setUserTouchedModel(true); try { localStorage.setItem(LAST_MODEL_KEY, nextModelKey); } catch { /* 忽略持久化失败 */ } setModelKey(nextModelKey); if (nextModel && requestedThinkingLevel !== "auto" && !nextModel.thinkingLevels.includes(requestedThinkingLevel)) setSessionThinkingLevels((current) => ({ ...current, [thinkingKey]: "auto" })); }} thinkingLevel={requestedThinkingLevel} thinkingLevels={selectedModel?.thinkingLevels ?? []} recommendedThinkingLevel={recommendedThinkingLevel} onThinkingLevelChange={(nextLevel) => setSessionThinkingLevels((current) => (current[thinkingKey] === nextLevel ? current : { ...current, [thinkingKey]: nextLevel }))} onOpenGlobalSettings={openGlobalSettings} onOpenSystemPrompt={() => setSystemPromptOpen(true)} disabled={previewIsReadOnly} isStreaming={isStreaming} onChange={setPrompt} onSubmit={submit} onCommand={runSlashCommand} onStop={() => { if (activeRun) chat.stop(activeRun.id); }} inputRef={composerRef} steerBehavior={steerBehavior} onSteerBehaviorChange={setSteerBehavior} queued={activeRun?.queued} stopping={activeRun?.stopping} />
+        <ChatComposer key={`${selectedProjectId ?? "default"}:${sessions.selectedSessionId ?? "new"}:${branchFromEntryId ?? "active"}`} value={prompt} projectId={selectedProjectId} models={models} modelKey={effectiveModelKey} onModelChange={(nextModelKey) => { const nextModel = models.find((model) => `${model.provider}:${model.id}` === nextModelKey); setUserTouchedModel(true); try { localStorage.setItem(LAST_MODEL_KEY, nextModelKey); } catch { /* 忽略持久化失败 */ } setModelKey(nextModelKey);  }} thinkingLevel={requestedThinkingLevel} thinkingLevels={selectedModel?.thinkingLevels ?? []} recommendedThinkingLevel={recommendedThinkingLevel} onThinkingLevelChange={(nextLevel) => setSessionThinkingLevels((current) => (current[thinkingKey] === nextLevel ? current : { ...current, [thinkingKey]: nextLevel }))} onOpenGlobalSettings={openGlobalSettings} onOpenSystemPrompt={() => setSystemPromptOpen(true)} disabled={previewIsReadOnly} isStreaming={isStreaming} onChange={setPrompt} onSubmit={submit} onCommand={runSlashCommand} onStop={() => { if (activeRun) chat.stop(activeRun.id); }} inputRef={composerRef} steerBehavior={steerBehavior} onSteerBehaviorChange={setSteerBehavior} queued={activeRun?.queued} stopping={activeRun?.stopping} />
       </section>
 
       {systemPromptOpen ? <SystemPromptModal projectId={sessions.selectedProjectId} onClose={() => setSystemPromptOpen(false)} /> : null}
@@ -531,6 +554,10 @@ export default function Home() {
         collapsed={panelsCollapsed.right}
         mobileOpen={mobileDrawer === "workspace"}
         onCloseMobile={() => setMobileDrawer(null)}
+        subagents={subagents.activities}
+        agents={subagents.agents}
+        agentsLoading={subagents.agentsLoading}
+        agentsError={subagents.agentsError}
       />
     </main>
   );
