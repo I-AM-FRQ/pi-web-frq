@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import type { ConversationItem, LiveTimelineItem, ModelDescriptor } from "@/contracts";
 
@@ -200,7 +200,7 @@ function HistoricalTask({ task, models, onUserMessageAction }: { task: TaskGroup
 const STREAM_BOTTOM_INSET = 220;
 const STREAM_TOP_INSET = 32;
 
-export function ConversationView({ conversation, pendingPrompt, timeline, retry, error, isStreaming, runId, isLoading, truncated, onLoadEarlier, loadingEarlier = false, models, liveModelName, onUserMessageAction, runStartedAt, runFinishedAt, runReplay = false }: ConversationViewProps) {
+export const ConversationView = memo(function ConversationView({ conversation, pendingPrompt, timeline, retry, error, isStreaming, runId, isLoading, truncated, onLoadEarlier, loadingEarlier = false, models, liveModelName, onUserMessageAction, runStartedAt, runFinishedAt, runReplay = false }: ConversationViewProps) {
   const hasLiveResponse = Boolean(pendingPrompt || timeline.length > 0 || error || isStreaming);
   const tasks = useMemo(() => taskGroups(conversation), [conversation]);
   const conversationKey = `${conversation.length}:${conversation.at(-1)?.timestamp ?? ""}`;
@@ -412,4 +412,4 @@ export function ConversationView({ conversation, pendingPrompt, timeline, retry,
       </div>
     </div>
   );
-}
+});

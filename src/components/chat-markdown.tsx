@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyTextToClipboard } from "@/client/clipboard";
@@ -31,10 +31,10 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-export function ChatMarkdown({ content }: { content: string }) {
+export const ChatMarkdown = memo(function ChatMarkdown({ content }: { content: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>{content}</ReactMarkdown>
     </div>
   );
-}
+});
