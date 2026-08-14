@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatStreamEvent } from "@/contracts";
-import { readChatStreamEvents } from "./use-chat-stream";
+import { readChatStreamEvents, reconnectDelayMs } from "./use-chat-stream";
 
 function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -65,5 +65,16 @@ describe("readChatStreamEvents", () => {
     await expect(readChatStreamEvents(streamFromChunks(["data: not-json\n\n"]), () => undefined)).rejects.toThrow(
       "服务返回了无法解析的流事件。",
     );
+  });
+});
+
+describe("reconnectDelayMs", () => {
+  it("退避增长且 16s 封顶", () => {
+    expect(reconnectDelayMs(0)).toBe(1_000);
+    expect(reconnectDelayMs(1)).toBe(2_000);
+    expect(reconnectDelayMs(2)).toBe(4_000);
+    expect(reconnectDelayMs(3)).toBe(8_000);
+    expect(reconnectDelayMs(4)).toBe(16_000);
+    expect(reconnectDelayMs(9)).toBe(16_000);
   });
 });

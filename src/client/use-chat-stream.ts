@@ -40,6 +40,11 @@ let runSequence = 0;
 const CHARS_PER_TOKEN = 2.5;
 const SPEED_WINDOW_MS = 3_000;
 
+/** 重连退避延迟：1s/2s/4s/8s/16s 封顶（attempt 为重试序号，从 0 开始）。 */
+export function reconnectDelayMs(attempt: number): number {
+  return Math.min(1_000 * 2 ** Math.min(attempt, 4), 16_000);
+}
+
 function nextRunId() {
   runSequence += 1;
   return `run-${Date.now()}-${runSequence}`;
@@ -133,6 +138,13 @@ export function useChatStream() {
   const runSessionIdsRef = useRef<Map<string, string>>(new Map());
   const activeSessionIdsRef = useRef<Set<string>>(new Set());
   const resumeAttemptedSessionIdsRef = useRef<Set<string>>(new Set());
+  // ---- 自动重连状态（移动端切后台导致 SSE 断开后自动恢复） ----
+  const reconnectingRunsRef = useRef<Set<string>>(new Set());
+  const reconnectTimersRef = useRef<Map<string, number>>(new Map());
+  const reconnectAttemptsRef = useRef<Map<string, number>>(new Map());
+  const reconnectSessionIdsRef = useRef<Map<string, string>>(new Map());
+  const reconnectFnsRef = useRef<Map<string, () => void>>(new Map());
+  const callbacksBySessionRef = useRef<Map<string, StreamCallbacks>>(new Map());
   const speedSamplesRef = useRef<Map<string, Array<{ chars: number; time: number }>>>(new Map());
   const [runs, setRuns] = useState<ChatRun[]>([]);
 
@@ -199,9 +211,11 @@ export function useChatStream() {
       updateRun(id, { queued: { steering: [...event.steering], followUp: [...event.followUp] } });
     }
     if (event.type === "error") {
+      finishReconnect(id);
       setRuns((current) => current.map((run) => run.id === id ? { ...run, error: run.stopping ? "已停止。" : event.message, isStreaming: false, tools: [], finishedAt: Date.now() } : run));
     }
     if (event.type === "done") {
+      finishReconnect(id);
       updateRun(id, { sessionId: event.sessionId, tools: [], finishedAt: Date.now() });
       callbacks.onSessionId?.(event.sessionId);
       callbacks.onCompleted?.(event.sessionId, id);
@@ -245,6 +259,8 @@ export function useChatStream() {
           } catch {
             message = `请求失败（HTTP ${response.status}）。`;
           }
+          // 4xx（参数/权限类错误）不会因重试而成功；5xx/网络中断才进入自动重连
+          if (response.status < 500 && response.status !== 408 && response.status !== 429) receivedError = true;
           throw new Error(message);
         }
         if (!response.body) throw new Error("服务未返回可读取的数据流。");
@@ -257,14 +273,25 @@ export function useChatStream() {
         });
         if (!terminalReceived && !controller.signal.aborted) throw new Error("连接在收到完成状态前中断。请重试。");
       } catch (caught) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !receivedError) {
+          // 流意外中断（手机切后台/断网）：会话已绑定则自动重连恢复，不判死
+          const sessionId = runSessionIdsRef.current.get(id) ?? request.sessionId ?? null;
+          if (sessionId) {
+            reconnectingRunsRef.current.add(id);
+            callbacksBySessionRef.current.set(sessionId, callbacks);
+            scheduleReconnect(id, sessionId, callbacks);
+          } else {
+            controller.abort();
+            receivedError = true;
+            updateRun(id, { error: caught instanceof Error ? caught.message : "请求失败，请稍后重试。" });
+          }
+        } else if (!controller.signal.aborted) {
           controller.abort();
           receivedError = true;
-          updateRun(id, { error: caught instanceof Error ? caught.message : "请求失败，请稍后重试。" });
         }
       } finally {
-        if (!controller.signal.aborted && !receivedError) updateRun(id, { error: "" });
-        updateRun(id, { isStreaming: false, finishedAt: Date.now() });
+        if (!controller.signal.aborted && !receivedError && !reconnectingRunsRef.current.has(id)) updateRun(id, { error: "" });
+        if (!reconnectingRunsRef.current.has(id)) updateRun(id, { isStreaming: false, finishedAt: Date.now() });
         controllersRef.current.delete(id);
         const activeSessionId = runSessionIdsRef.current.get(id);
         runSessionIdsRef.current.delete(id);
@@ -276,8 +303,76 @@ export function useChatStream() {
     return true;
   }, [applyStreamEvent, updateRun]);
 
+  /** 清除指定 run 的全部重连状态。 */
+  const finishReconnect = useCallback((runId: string) => {
+    reconnectingRunsRef.current.delete(runId);
+    reconnectSessionIdsRef.current.delete(runId);
+    reconnectAttemptsRef.current.delete(runId);
+    reconnectFnsRef.current.delete(runId);
+    const timer = reconnectTimersRef.current.get(runId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      reconnectTimersRef.current.delete(runId);
+    }
+  }, []);
+
+  /**
+   * 自动重连：对已绑定会话的运行重新接入 /api/chat/[sessionId]/stream 重放流。
+   * 退避重试（1s/2s/4s/8s/16s 封顶）直到成功、服务端 404（任务已完成）或用户停止。
+   */
+  const scheduleReconnect = useCallback((runId: string, sessionId: string, callbacks: StreamCallbacks) => {
+    if (reconnectTimersRef.current.has(runId) || reconnectingRunsRef.current.has(runId)) return;
+    reconnectingRunsRef.current.add(runId);
+    reconnectSessionIdsRef.current.set(runId, sessionId);
+    updateRun(runId, { isStreaming: true, error: "连接已断开，正在自动重连…" });
+
+    const attempt = () => {
+      reconnectTimersRef.current.delete(runId);
+      reconnectFnsRef.current.delete(runId);
+      const controller = new AbortController();
+      controllersRef.current.set(runId, controller);
+      void (async () => {
+        let terminalReceived = false;
+        try {
+          const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/stream`, { cache: "no-store", signal: controller.signal });
+          if (response.status === 404) {
+            // 服务端已无活跃运行：任务已完成，结束重连并刷新详情
+            finishReconnect(runId);
+            updateRun(runId, { isStreaming: false, finishedAt: Date.now(), error: "" });
+            callbacks.onCompleted?.(sessionId, runId);
+            return;
+          }
+          if (!response.ok) throw new Error(`无法恢复任务（HTTP ${response.status}）。`);
+          if (!response.body) throw new Error("服务未返回可读取的数据流。");
+          updateRun(runId, { error: "" });
+          await readChatStreamEvents(response.body, (event) => {
+            if (event.type === "done" || event.type === "error") terminalReceived = true;
+            applyStreamEvent(runId, event, callbacks);
+          });
+          if (!terminalReceived && !controller.signal.aborted) throw new Error("连接再次中断。");
+          finishReconnect(runId);
+        } catch (caught) {
+          if (!controller.signal.aborted) {
+            const attemptCount = (reconnectAttemptsRef.current.get(runId) ?? 0) + 1;
+            reconnectAttemptsRef.current.set(runId, attemptCount);
+            const delay = reconnectDelayMs(attemptCount - 1);
+            updateRun(runId, { error: "连接已断开，正在自动重连…", isStreaming: true });
+            const fn = () => { attempt(); };
+            reconnectFnsRef.current.set(runId, fn);
+            reconnectTimersRef.current.set(runId, window.setTimeout(fn, delay));
+          } else {
+            finishReconnect(runId);
+          }
+        } finally {
+          controllersRef.current.delete(runId);
+        }
+      })();
+    };
+    attempt();
+  }, [applyStreamEvent, finishReconnect, updateRun]);
+
   const resume = useCallback((sessionId: string, callbacks: StreamCallbacks = {}) => {
-    if (activeSessionIdsRef.current.has(sessionId) || resumeAttemptedSessionIdsRef.current.has(sessionId)) return false;
+    if (activeSessionIdsRef.current.has(sessionId)) return false;
     activeSessionIdsRef.current.add(sessionId);
     resumeAttemptedSessionIdsRef.current.add(sessionId);
     const id = nextRunId();
@@ -295,16 +390,24 @@ export function useChatStream() {
           activeRunFound = false;
           return;
         }
-        if (!response.ok) throw new Error(`无法恢复任务（HTTP ${response.status}）。`);
+        if (!response.ok) {
+          if (response.status < 500 && response.status !== 408 && response.status !== 429) receivedError = true;
+          throw new Error(`无法恢复任务（HTTP ${response.status}）。`);
+        }
         if (!response.body) throw new Error("服务未返回可读取的数据流。");
         await readChatStreamEvents(response.body, (event) => {
           if (event.type === "error") receivedError = true;
           if (event.type === "done" || event.type === "error") terminalReceived = true;
           applyStreamEvent(id, event, callbacks);
         });
-        if (!terminalReceived && !controller.signal.aborted) throw new Error("恢复连接在任务完成前中断。请刷新后重试。");
+        if (!terminalReceived && !controller.signal.aborted) throw new Error("恢复连接在任务完成前中断。");
       } catch (caught) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !receivedError) {
+          // 恢复流中断：进入自动重连（复用当前 run 的 id 与回调）
+          reconnectingRunsRef.current.add(id);
+          callbacksBySessionRef.current.set(sessionId, callbacks);
+          scheduleReconnect(id, sessionId, callbacks);
+        } else if (!controller.signal.aborted) {
           receivedError = true;
           updateRun(id, { error: caught instanceof Error ? caught.message : "无法恢复任务。" });
         }
@@ -313,12 +416,12 @@ export function useChatStream() {
         runSessionIdsRef.current.delete(id);
         activeSessionIdsRef.current.delete(sessionId);
         if (!activeRunFound) setRuns((current) => current.filter((run) => run.id !== id));
-        else updateRun(id, { isStreaming: false, finishedAt: Date.now() });
+        else if (!reconnectingRunsRef.current.has(id)) updateRun(id, { isStreaming: false, finishedAt: Date.now() });
         if (!receivedError && !activeRunFound) return;
       }
     })();
     return true;
-  }, [applyStreamEvent, updateRun]);
+  }, [applyStreamEvent, scheduleReconnect, updateRun]);
 
   /** 主动移除一条运行（详情刷新完成后调用，避免实时/历史重复渲染造成闪烁）。 */
   const removeRun = useCallback((runId: string) => {
@@ -328,6 +431,7 @@ export function useChatStream() {
 
   const stop = useCallback((runId: string) => {
     updateRun(runId, { stopping: true });
+    finishReconnect(runId);
     const controller = controllersRef.current.get(runId);
     const sessionId = runSessionIdsRef.current.get(runId);
     if (sessionId) {
@@ -355,7 +459,29 @@ export function useChatStream() {
 
   useEffect(() => {
     const controllers = controllersRef.current;
-    return () => controllers.forEach((controller) => controller.abort());
+    return () => {
+      controllers.forEach((controller) => controller.abort());
+      for (const timer of reconnectTimersRef.current.values()) window.clearTimeout(timer);
+      reconnectTimersRef.current.clear();
+    };
+  }, []);
+
+  // 移动端切后台导致 SSE 断开：回到前台时立即重试所有等待中的自动重连
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      for (const [runId, fn] of reconnectFnsRef.current) {
+        const timer = reconnectTimersRef.current.get(runId);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          reconnectTimersRef.current.delete(runId);
+          fn();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
   return { runs, runFor, runningSessionIds, send, resume, stop, removeRun };
