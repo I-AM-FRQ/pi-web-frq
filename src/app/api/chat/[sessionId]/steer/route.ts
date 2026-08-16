@@ -55,16 +55,21 @@ export async function POST(
   } catch (error) {
     return NextResponse.json({ error: { code: "invalid_steer", message: error instanceof Error ? error.message : "图片参数无效。" } }, { status: 400, headers: NO_STORE });
   }
-  const behavior = body.behavior === "followUp" ? "followUp" : "steer";
-
   const session = activeChatSession(sessionId);
-  if (!session || typeof session[behavior] !== "function") {
+  if (!session) {
     return NextResponse.json({ error: { code: "run_not_found", message: "该会话当前没有正在执行的任务。" } }, { status: 404, headers: NO_STORE });
   }
 
   try {
-    await session[behavior](body.text, images);
-    return NextResponse.json({ ok: true, behavior }, { headers: NO_STORE });
+    if (body.behavior === "steer" && typeof session.steer === "function") {
+      await session.steer(body.text, images);
+      return NextResponse.json({ accepted: true, queued: false, behavior: "steer" }, { headers: NO_STORE });
+    }
+    if (typeof session.followUp !== "function") {
+      return NextResponse.json({ error: { code: "run_not_found", message: "该会话当前没有正在执行的任务。" } }, { status: 404, headers: NO_STORE });
+    }
+    await session.followUp(body.text, images);
+    return NextResponse.json({ accepted: true, queued: true, behavior: "followUp" }, { headers: NO_STORE });
   } catch (error) {
     console.error("Unable to queue steer message", error);
     return NextResponse.json({ error: { code: "steer_failed", message: "无法插入引导消息。" } }, { status: 503, headers: NO_STORE });

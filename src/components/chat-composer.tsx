@@ -60,13 +60,10 @@ type ChatComposerProps = {
   disabled: boolean;
   isStreaming: boolean;
   onChange: (value: string) => void;
-  onSubmit: (images: ChatImage[]) => boolean;
+  onSubmit: (images: ChatImage[], behavior: "steer" | "followUp") => boolean;
   onCommand: (command: SlashCommand, argument: string) => Promise<boolean>;
   onStop: () => void;
-  steerBehavior: "steer" | "followUp";
-  onSteerBehaviorChange: (behavior: "steer" | "followUp") => void;
   stopping?: boolean;
-  queued?: { steering: string[]; followUp: string[] };
   inputRef?: RefObject<HTMLTextAreaElement | null>;
 };
 
@@ -86,7 +83,7 @@ function readImage(file: File): Promise<DraftImage> {
   });
 }
 
-export function ChatComposer({ value, projectId, models, modelKey, onModelChange, thinkingLevel, thinkingLevels, recommendedThinkingLevel, onThinkingLevelChange, onOpenGlobalSettings, onOpenSystemPrompt, disabled, isStreaming, onChange, onSubmit, onCommand, onStop, steerBehavior, onSteerBehaviorChange, queued, stopping, inputRef }: ChatComposerProps) {
+export function ChatComposer({ value, projectId, models, modelKey, onModelChange, thinkingLevel, thinkingLevels, recommendedThinkingLevel, onThinkingLevelChange, onOpenGlobalSettings, onOpenSystemPrompt, disabled, isStreaming, onChange, onSubmit, onCommand, onStop, stopping, inputRef }: ChatComposerProps) {
   const localInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = inputRef ?? localInputRef;
@@ -100,6 +97,7 @@ export function ChatComposer({ value, projectId, models, modelKey, onModelChange
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [steerMode, setSteerMode] = useState<"steer" | "followUp">("followUp");
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const thinkingMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -194,7 +192,7 @@ export function ChatComposer({ value, projectId, models, modelKey, onModelChange
     // 3) 文件引用菜单：选择匹配项。
     if (menuVisible && search.matches[activeIndex]) return selectMatch(search.matches[activeIndex]);
     // 4) 普通任务发送。
-    if (onSubmit(images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })))) {
+    if (onSubmit(images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })), steerMode)) {
       setImages([]);
       setImageError("");
     }
@@ -294,12 +292,6 @@ export function ChatComposer({ value, projectId, models, modelKey, onModelChange
 
   return (
     <form className="composer" onSubmit={submit}>
-      {queued && (queued.steering.length > 0 || queued.followUp.length > 0) ? (
-        <div className="steer-queue" role="status">
-          <span className="steer-queue-label">已插入引导 · 当前回复完成后自动处理</span>
-          {[...queued.steering, ...queued.followUp].map((text, index) => <div className="steer-queue-item" key={index}><span aria-hidden="true">›</span>{text}</div>)}
-        </div>
-      ) : null}
       <input ref={fileInputRef} className="sr-only" id="image-upload" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={onFileChange} disabled={disabled || isStreaming} />
       <label className="sr-only" htmlFor="chat-input">输入任务</label>
       {images.length ? <div className="image-drafts" aria-label="待发送图片">{images.map((image) => <div className="image-draft" key={image.id}><Image src={image.previewUrl} alt="待发送图片" fill sizes="72px" unoptimized /><button type="button" onClick={() => removeImage(image.id)} aria-label="移除图片">×</button></div>)}</div> : null}
@@ -333,8 +325,8 @@ export function ChatComposer({ value, projectId, models, modelKey, onModelChange
       </div>
       <div className="composer-actions">
         <div className="composer-hints"><div className="composer-model" ref={modelMenuRef}><button type="button" className="composer-model-settings composer-desktop-only" onClick={() => { setModelMenuOpen(false); onOpenGlobalSettings(); }} disabled={disabled || isStreaming} aria-label="打开全局设置" title="全局设置"><svg className="composer-model-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.4 3.2h5.2l.6 2.1c.5.2 1 .5 1.5.9l2.1-.5 2.6 4.5-1.6 1.5v1.7l1.6 1.5-2.6 4.5-2.1-.5c-.5.4-1 .7-1.5.9l-.6 2.1H9.4l-.6-2.1c-.5-.2-1-.5-1.5-.9l-2.1.5-2.6-4.5 1.6-1.5v-1.7l-1.6-1.5 2.6-4.5 2.1.5c.5-.4 1-.7 1.5-.9l.6-2.1ZM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6Z" /></svg></button><button type="button" className="composer-model-trigger" onClick={() => { setThinkingMenuOpen(false); setMoreOpen(false); setModelMenuOpen((open) => !open); }} disabled={disabled || models.length === 0} aria-label="选择模型" aria-expanded={modelMenuOpen} aria-haspopup="listbox"><span className="composer-model-label">{selectedModel?.name ?? (models.length ? "选择模型" : "模型不可用")}</span></button>{modelMenuOpen ? <div className="composer-model-menu" role="listbox" aria-label="选择模型">{modelGroups.map((group) => <section key={group.provider} className="composer-model-group"><h3>{group.provider.toUpperCase()}</h3>{group.models.map((model) => { const nextModelKey = `${model.provider}:${model.id}`; return <button key={nextModelKey} type="button" role="option" aria-selected={nextModelKey === modelKey} className={nextModelKey === modelKey ? "selected" : ""} onClick={() => chooseModel(nextModelKey)}>{model.name}</button>; })}</section>)}</div> : null}</div><div className="composer-thinking" ref={thinkingMenuRef}><button type="button" className="composer-thinking-trigger" onClick={() => { setModelMenuOpen(false); setMoreOpen(false); setThinkingMenuOpen((open) => !open); }} disabled={disabled || thinkingLevels.length === 0} aria-label="思考强度" aria-expanded={thinkingMenuOpen} aria-haspopup="listbox"><span>思考</span><span className="composer-thinking-value">{thinkingLevel === "auto" ? "自动" : THINKING_NAMES[thinkingLevel]}</span></button>{thinkingMenuOpen ? <ThinkingSlider level={thinkingLevel} options={thinkingOptions} recommended={recommendedThinkingLevel} onChange={onThinkingLevelChange} /> : null}</div><button className="composer-attach composer-desktop-only" type="button" onClick={() => fileInputRef.current?.click()} disabled={disabled || isStreaming} aria-label="添加图片" title="添加图片">＋</button></div>
-        <div className="composer-more composer-mobile-only" ref={moreMenuRef}><button type="button" className="composer-more-toggle" onClick={() => { setModelMenuOpen(false); setThinkingMenuOpen(false); setMoreOpen((open) => !open); }} disabled={disabled} aria-label="更多操作" title="更多操作" aria-expanded={moreOpen}><span aria-hidden="true">⋯</span></button>{moreOpen ? <div className="composer-more-menu" role="menu" aria-label="更多操作"><button type="button" role="menuitem" onClick={() => { setMoreOpen(false); fileInputRef.current?.click(); }} disabled={disabled || isStreaming}><span aria-hidden="true">＋</span>添加图片</button><button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onOpenGlobalSettings(); }} disabled={disabled || isStreaming}><span aria-hidden="true">⚙</span>全局设置</button><button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onOpenSystemPrompt(); }} disabled={disabled || isStreaming}><span aria-hidden="true">❐</span>项目提示词</button>{isStreaming ? <button type="button" role="menuitem" className={steerBehavior === "steer" ? "selected" : ""} onClick={() => onSteerBehaviorChange(steerBehavior === "steer" ? "followUp" : "steer")}><span aria-hidden="true">⇄</span>流式模式：{steerBehavior === "steer" ? "引导" : "排队"}</button> : null}</div> : null}</div>
-        {isStreaming ? <div className="composer-steer"><div className="steer-mode-toggle composer-desktop-only" role="radiogroup" aria-label="流式插入方式"><button type="button" role="radio" aria-checked={steerBehavior === "steer"} className={steerBehavior === "steer" ? "selected" : ""} title="当前回复完成后立即处理这条消息" onClick={() => onSteerBehaviorChange("steer")}>引导</button><button type="button" role="radio" aria-checked={steerBehavior === "followUp"} className={steerBehavior === "followUp" ? "selected" : ""} title="等待所有工具调用与回合全部结束后再处理" onClick={() => onSteerBehaviorChange("followUp")}>排队</button></div><button className="send-button steer-send" type="submit" aria-label="发送引导">发送<span aria-hidden="true">↑</span></button><button className="stop-button" type="button" onClick={onStop} disabled={stopping} aria-label="停止生成">{stopping ? "停止中…" : "停止"}</button></div> : <div className="composer-submit-actions"><button className="system-prompt-button composer-desktop-only" type="button" onClick={onOpenSystemPrompt} disabled={disabled || isStreaming} aria-label="查看项目系统提示词" title="查看项目系统提示词"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5h10.5A2.5 2.5 0 0 1 18 6v14.5L13.5 18 9 20.5V6A2.5 2.5 0 0 0 6.5 3.5H5Z" /><path d="M6 3.5A2.5 2.5 0 0 1 8.5 6v14.5" /></svg></button><button className="send-button" type="submit" aria-label="发送任务">发送 <span aria-hidden="true">↑</span></button></div>}
+        <div className="composer-more composer-mobile-only" ref={moreMenuRef}><button type="button" className="composer-more-toggle" onClick={() => { setModelMenuOpen(false); setThinkingMenuOpen(false); setMoreOpen((open) => !open); }} disabled={disabled} aria-label="更多操作" title="更多操作" aria-expanded={moreOpen}><span aria-hidden="true">⋯</span></button>{moreOpen ? <div className="composer-more-menu" role="menu" aria-label="更多操作"><button type="button" role="menuitem" onClick={() => { setMoreOpen(false); fileInputRef.current?.click(); }} disabled={disabled || isStreaming}><span aria-hidden="true">＋</span>添加图片</button><button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onOpenGlobalSettings(); }} disabled={disabled || isStreaming}><span aria-hidden="true">⚙</span>全局设置</button><button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onOpenSystemPrompt(); }} disabled={disabled || isStreaming}><span aria-hidden="true">❐</span>项目提示词</button></div> : null}</div>
+        {isStreaming ? <div className="composer-steer"><div className="steer-mode-toggle" role="radiogroup" aria-label="执行中消息处理方式"><button type="button" role="radio" aria-checked={steerMode === "steer"} className={steerMode === "steer" ? "selected" : ""} onClick={() => setSteerMode("steer")}>引导</button><button type="button" role="radio" aria-checked={steerMode === "followUp"} className={steerMode === "followUp" ? "selected" : ""} onClick={() => setSteerMode("followUp")}>排队</button></div><button className="send-button" type="submit" aria-label={steerMode === "steer" ? "引导" : "发送"} title={steerMode === "steer" ? "引导" : "发送"}><span aria-hidden="true">↑</span></button><button className="stop-button" type="button" onClick={onStop} disabled={stopping} aria-label="停止生成">{stopping ? "停止中…" : "停止"}</button></div> : <div className="composer-submit-actions"><button className="system-prompt-button composer-desktop-only" type="button" onClick={onOpenSystemPrompt} disabled={disabled || isStreaming} aria-label="查看项目系统提示词" title="查看项目系统提示词"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5h10.5A2.5 2.5 0 0 1 18 6v14.5L13.5 18 9 20.5V6A2.5 2.5 0 0 0 6.5 3.5H5Z" /><path d="M6 3.5A2.5 2.5 0 0 1 8.5 6v14.5" /></svg></button><button className="send-button" type="submit" aria-label="发送任务">发送 <span aria-hidden="true">↑</span></button></div>}
       </div>
     </form>
   );

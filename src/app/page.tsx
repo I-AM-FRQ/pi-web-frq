@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChatStream } from "@/client/use-chat-stream";
 import { useSubagentActivity } from "@/client/use-subagent-activity";
 import { useCompletionNotifier } from "@/client/use-completion-notifier";
+import { useFrqCompletionNotifier } from "@/client/use-frq-completion-notifier";
+import { useSessionActivity, type SessionActivity } from "@/client/use-session-activity";
 import { CompletionToast } from "@/components/completion-toast";
 import { useSessions } from "@/client/use-sessions";
 import { useWorkspaceTree } from "@/client/use-workspace-tree";
@@ -20,12 +22,18 @@ import { ProviderConfigModal } from "@/components/provider-config-modal";
 import { AgentResourcesModal } from "@/components/agent-resources-modal";
 import { SystemPromptModal } from "@/components/system-prompt-modal";
 import { GlobalSettingsModal } from "@/components/global-settings-modal";
+import { SubagentWidget } from "@/components/subagent-widget";
 import { insertFileReference } from "@/client/file-references";
 import { useSettings } from "@/client/settings";
 import { copyTextToClipboard } from "@/client/clipboard";
 import type { AgentResources, ChatImage, ModelDescriptor, SessionContextSummary, ThinkingLevel } from "@/contracts";
 
 type RunConfigTab = "skills" | "plugins";
+
+type WakeRunFinalization = {
+  promise: Promise<void>;
+  runIds: Set<string>;
+};
 
 const LAST_MODEL_KEY = "pi-web-frq-last-model";
 
@@ -53,7 +61,6 @@ export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [commandNotice, setCommandNotice] = useState<{ message: string; isError: boolean } | null>(null);
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
-  const [steerBehavior, setSteerBehavior] = useState<"steer" | "followUp">("steer");
   const [runConfigTab, setRunConfigTab] = useState<RunConfigTab | null>(null);
   const [providerConfigOpen, setProviderConfigOpen] = useState(false);
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false);
@@ -88,6 +95,9 @@ export default function Home() {
   const [liveContext, setLiveContext] = useState<{ sessionId: string; context: SessionContextSummary } | null>(null);
   const rightWidthRestoredRef = useRef(false);
   const selectedSessionIdRef = useRef<string | null>(null);
+  const detailRefreshesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const wakeRunFinalizationsRef = useRef<Map<string, WakeRunFinalization>>(new Map());
+  const completedWakeSessionIdsRef = useRef<Set<string>>(new Set());
   const resumedSessionIdsRef = useRef<Set<string>>(new Set());
   const rightResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -159,28 +169,99 @@ export default function Home() {
   }, []);
 
   const selectedSessionId = sessions.selectedSessionId;
-  const resumeChat = chat.resume;
-  const adoptSession = sessions.adoptSession;
+  const { toasts: frqToasts, dismissToast: dismissFrqToast } = useFrqCompletionNotifier(selectedSessionId, settings.completionAlert);
   const refreshCurrentDetail = sessions.refreshCurrentDetail;
   const refreshSessions = sessions.refreshSessions;
   const removeRun = chat.removeRun;
+  const resumeChat = chat.resume;
+  const runFor = chat.runFor;
+
+  const refreshAfterRun = useCallback((sessionId: string) => {
+    const existing = detailRefreshesRef.current.get(sessionId);
+    if (existing) return { refresh: existing, started: false };
+    const refresh = refreshCurrentDetail(sessionId);
+    detailRefreshesRef.current.set(sessionId, refresh);
+    void refresh.finally(() => {
+      if (detailRefreshesRef.current.get(sessionId) === refresh) detailRefreshesRef.current.delete(sessionId);
+    });
+    return { refresh, started: true };
+  }, [refreshCurrentDetail]);
+
+  const finalizeWakeRun = useCallback((sessionId: string, runId?: string) => {
+    if (completedWakeSessionIdsRef.current.has(sessionId)) {
+      if (runId) removeRun(runId);
+      return Promise.resolve();
+    }
+    const existing = wakeRunFinalizationsRef.current.get(sessionId);
+    if (existing) {
+      if (runId) existing.runIds.add(runId);
+      return existing.promise;
+    }
+    const runIds = new Set(runId ? [runId] : []);
+    const finalization = {
+      runIds,
+      promise: refreshCurrentDetail(sessionId).then(async () => {
+        for (const id of runIds) removeRun(id);
+        await refreshSessions(false);
+        completedWakeSessionIdsRef.current.add(sessionId);
+      }),
+    };
+    wakeRunFinalizationsRef.current.set(sessionId, finalization);
+    void finalization.promise.finally(() => {
+      if (wakeRunFinalizationsRef.current.get(sessionId) === finalization) wakeRunFinalizationsRef.current.delete(sessionId);
+    }).catch(() => {});
+    return finalization.promise;
+  }, [refreshCurrentDetail, refreshSessions, removeRun]);
+
+  const resumeWakeRun = useCallback((sessionId: string) => {
+    if (sessionId !== selectedSessionIdRef.current || runFor(sessionId)?.isStreaming) return false;
+    return resumeChat(sessionId, {
+      onCompleted: (completedSessionId, runId) => {
+        void finalizeWakeRun(completedSessionId, runId);
+      },
+    });
+  }, [finalizeWakeRun, resumeChat, runFor]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
 
+  // 刷新后 useChatStream 没有内存中的运行记录；每个会话仅探测一次当前活动流。
+  // resumeWakeRun 仍处理活动事件和完成后的详情刷新，避免两套恢复路径产生重复运行。
   useEffect(() => {
     if (!selectedSessionId || resumedSessionIdsRef.current.has(selectedSessionId)) return;
     resumedSessionIdsRef.current.add(selectedSessionId);
-    resumeChat(selectedSessionId, {
-      onSessionId: (sessionId) => adoptSession(sessionId),
-      onCompleted: (sessionId, runId) => {
-        if (sessionId !== selectedSessionIdRef.current) setCompletedSessionIds((current) => new Set(current).add(sessionId));
-        void refreshCurrentDetail(sessionId).finally(() => removeRun(runId));
-        void refreshSessions(false);
-      },
+    resumeWakeRun(selectedSessionId);
+  }, [resumeWakeRun, selectedSessionId]);
+
+  const handleSessionActivity = useCallback((activity: SessionActivity) => {
+    if (activity.sessionId !== selectedSessionIdRef.current) return;
+    if (activity.type === "run-start") {
+      wakeRunFinalizationsRef.current.delete(activity.sessionId);
+      completedWakeSessionIdsRef.current.delete(activity.sessionId);
+      resumeWakeRun(activity.sessionId);
+      return;
+    }
+    void finalizeWakeRun(activity.sessionId, runFor(activity.sessionId)?.id);
+  }, [finalizeWakeRun, resumeWakeRun, runFor]);
+
+  useSessionActivity(selectedSessionId, handleSessionActivity);
+
+  const selectSession = useCallback((sessionId: string) => {
+    setCompletedSessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
     });
-  }, [adoptSession, refreshCurrentDetail, refreshSessions, removeRun, resumeChat, selectedSessionId]);
+    setBranchFromEntryId(undefined);
+    setBranchDetailReady(false);
+    selectedSessionIdRef.current = sessionId;
+    sessions.selectSession(sessionId);
+    // A 404 means no active run; useChatStream removes the temporary replay state.
+    resumeWakeRun(sessionId);
+    setMobileDrawer(null);
+  }, [resumeWakeRun, sessions]);
 
   useEffect(() => {
     if (!selectedSessionId || !isStreaming) return;
@@ -245,31 +326,42 @@ export default function Home() {
     if (commandNoticeTimerRef.current !== null) window.clearTimeout(commandNoticeTimerRef.current);
   }, []);
 
-  const submit = (images: ChatImage[]) => {
-    const message = (composerRef.current?.value ?? prompt).trim();
+  const submit = (images: ChatImage[], behavior: "steer" | "followUp") => {
+    const submittedPrompt = composerRef.current?.value ?? prompt;
+    const message = submittedPrompt.trim();
     if ((!message && images.length === 0) || previewIsReadOnly) return false;
     const promptForModel = message || "请分析这张图片。";
     const sessionId = sessions.selectedSessionId ?? undefined;
     const projectId = sessionId ? undefined : selectedProjectId ?? undefined;
+    if (sessionId) detailRefreshesRef.current.delete(sessionId);
 
-    // 流式中发送：不打断当前回复，插入为引导消息，当前回复完成后自动处理。
+    // 流式中可引导当前运行，或按 FIFO 排队；引导消息由 SSE 写入时间线。
     if (isStreaming) {
-      if (!sessionId) return false;
+      if (!sessionId || !activeRun) return false;
+      const queueVersionAtSubmit = activeRun.queueVersion;
       void (async () => {
         try {
           const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/steer`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: promptForModel, ...(images.length ? { images } : {}), behavior: steerBehavior }),
+            body: JSON.stringify({ text: promptForModel, behavior, ...(images.length ? { images } : {}) }),
           });
-          const payload = await response.json() as { error?: { message?: unknown } };
-          if (!response.ok) throw new Error(typeof payload.error?.message === "string" ? payload.error.message : "引导插入失败。");
-          showCommandNotice("已插入引导，当前回复完成后自动处理。", false);
+          const payload = await response.json() as { behavior?: "steer" | "followUp"; error?: { message?: unknown } };
+          if (!response.ok) throw new Error(typeof payload.error?.message === "string" ? payload.error.message : "引导消息发送失败。");
+          if (payload.behavior === "followUp") {
+            const pendingQueueItem = chat.createPendingQueueItem(promptForModel);
+            chat.addPendingQueueItem(activeRun.id, pendingQueueItem, queueVersionAtSubmit);
+            showCommandNotice("已加入队列。", false);
+          } else {
+            showCommandNotice("已引导，当前步骤完成后生效。", false);
+          }
+          setPrompt((current) => current === submittedPrompt ? "" : current);
         } catch (caught) {
-          showCommandNotice(caught instanceof Error ? caught.message : "引导插入失败。", true);
+          // 请求完成前不清空输入；若其他状态更新意外清空，也恢复本次提交快照。
+          setPrompt((current) => current || submittedPrompt);
+          showCommandNotice(caught instanceof Error ? caught.message : "引导消息发送失败。", true);
         }
       })();
-      setPrompt("");
       return true;
     }
 
@@ -288,15 +380,21 @@ export default function Home() {
       projectId,
       autoRetry: settings.autoRetry,
     }, {
-      onSessionId: (nextSessionId) => sessions.adoptSession(nextSessionId, projectId),
+      onSessionId: (nextSessionId) => {
+        detailRefreshesRef.current.delete(nextSessionId);
+        sessions.adoptSession(nextSessionId, projectId);
+      },
       onCompleted: (sessionId, runId) => {
         if (sessionId !== selectedSessionIdRef.current) setCompletedSessionIds((current) => new Set(current).add(sessionId));
         // 等详情刷新为新分支投影后标记就绪；分支标记保留，用于持续隐藏分支点消息。
-        void sessions.refreshCurrentDetail(sessionId).finally(() => {
+        const { refresh, started } = refreshAfterRun(sessionId);
+        void refresh.then(() => {
           setBranchDetailReady(true);
           removeRun(runId);
+        }, () => {
+          setBranchDetailReady(true);
         });
-        void sessions.refreshSessions(false);
+        if (started) void refreshSessions(false);
       },
     }, promptForModel);
     if (started) {
@@ -487,7 +585,7 @@ export default function Home() {
           isLoading={sessions.isLoading}
           runningSessionIds={chat.runningSessionIds}
           onNewSession={(projectId: string | null) => { setBranchFromEntryId(undefined); setBranchDetailReady(false); sessions.createSession(projectId); setMobileDrawer(null); }}
-          onSelectSession={(sessionId) => { setCompletedSessionIds((current) => { if (!current.has(sessionId)) return current; const next = new Set(current); next.delete(sessionId); return next; }); setBranchFromEntryId(undefined); setBranchDetailReady(false); sessions.selectSession(sessionId); setMobileDrawer(null); }}
+          onSelectSession={(sessionId) => { void selectSession(sessionId); }}
           onSelectProject={(projectId) => { sessions.selectProject(projectId); setMobileDrawer(null); }}
           onCreateProject={sessions.createProject}
           onRenameProject={sessions.renameProject}
@@ -506,15 +604,17 @@ export default function Home() {
       </aside>
 
       <section className="chat-panel" aria-label="聊天">
+        <SubagentWidget key={selectedSessionId ?? "no-session"} sessionId={selectedSessionId} />
         <ChatHeader title={sessions.detail?.session.name || "对话"} usage={sessions.detail?.usage} context={displayedContext} tokenSpeed={activeRun?.tokenSpeed ?? 0} isStreaming={isStreaming} onOpenSessions={() => setMobileDrawer("sessions")} onOpenWorkspace={() => setMobileDrawer("workspace")} />
         {sessions.error ? <p className="page-error" role="alert">{sessions.error}</p> : null}
         {commandBusy ? <p className="command-notice busy" role="status">正在执行 /{commandBusy} …</p> : null}
         {commandNotice ? <p className={`command-notice${commandNotice.isError ? " error" : ""}`} role={commandNotice.isError ? "alert" : "status"}>{commandNotice.message}</p> : null}
-        <CompletionToast toasts={toasts} onDismiss={dismissToast} />
+        <CompletionToast toasts={[...toasts, ...frqToasts]} onDismiss={(id) => { dismissToast(id); dismissFrqToast(id); }} />
         <ConversationView
           conversation={visibleConversation}
           pendingPrompt={activeRun?.pendingPrompt ?? ""}
           timeline={activeRun?.timeline ?? []}
+          pendingQueue={activeRun?.queued ?? []}
           retry={activeRun?.retry ?? null}
           error={activeRun?.error ?? ""}
           isStreaming={activeRun?.isStreaming ?? false}
@@ -531,7 +631,7 @@ export default function Home() {
           runReplay={activeRun?.replay}
         />
         {previewIsReadOnly ? <p className="branch-notice">正在只读查看历史节点。请选择“从此继续”后再发送消息。</p> : null}
-        <ChatComposer key={`${selectedProjectId ?? "default"}:${sessions.selectedSessionId ?? "new"}:${branchFromEntryId ?? "active"}`} value={prompt} projectId={selectedProjectId} models={models} modelKey={effectiveModelKey} onModelChange={(nextModelKey) => { const nextModel = models.find((model) => `${model.provider}:${model.id}` === nextModelKey); setUserTouchedModel(true); try { localStorage.setItem(LAST_MODEL_KEY, nextModelKey); } catch { /* 忽略持久化失败 */ } setModelKey(nextModelKey);  }} thinkingLevel={requestedThinkingLevel} thinkingLevels={selectedModel?.thinkingLevels ?? []} recommendedThinkingLevel={recommendedThinkingLevel} onThinkingLevelChange={(nextLevel) => setSessionThinkingLevels((current) => (current[thinkingKey] === nextLevel ? current : { ...current, [thinkingKey]: nextLevel }))} onOpenGlobalSettings={openGlobalSettings} onOpenSystemPrompt={() => setSystemPromptOpen(true)} disabled={previewIsReadOnly} isStreaming={isStreaming} onChange={setPrompt} onSubmit={submit} onCommand={runSlashCommand} onStop={() => { if (activeRun) chat.stop(activeRun.id); }} inputRef={composerRef} steerBehavior={steerBehavior} onSteerBehaviorChange={setSteerBehavior} queued={activeRun?.queued} stopping={activeRun?.stopping} />
+        <ChatComposer key={`${selectedProjectId ?? "default"}:${sessions.selectedSessionId ?? "new"}:${branchFromEntryId ?? "active"}`} value={prompt} projectId={selectedProjectId} models={models} modelKey={effectiveModelKey} onModelChange={(nextModelKey) => { setUserTouchedModel(true); try { localStorage.setItem(LAST_MODEL_KEY, nextModelKey); } catch { /* 忽略持久化失败 */ } setModelKey(nextModelKey);  }} thinkingLevel={requestedThinkingLevel} thinkingLevels={selectedModel?.thinkingLevels ?? []} recommendedThinkingLevel={recommendedThinkingLevel} onThinkingLevelChange={(nextLevel) => setSessionThinkingLevels((current) => (current[thinkingKey] === nextLevel ? current : { ...current, [thinkingKey]: nextLevel }))} onOpenGlobalSettings={openGlobalSettings} onOpenSystemPrompt={() => setSystemPromptOpen(true)} disabled={previewIsReadOnly} isStreaming={isStreaming} onChange={setPrompt} onSubmit={submit} onCommand={runSlashCommand} onStop={() => { if (activeRun) chat.stop(activeRun.id); }} inputRef={composerRef} stopping={activeRun?.stopping} />
       </section>
 
       {systemPromptOpen ? <SystemPromptModal projectId={sessions.selectedProjectId} onClose={() => setSystemPromptOpen(false)} /> : null}

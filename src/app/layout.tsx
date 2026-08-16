@@ -3,6 +3,7 @@ import "./globals.css";
 import { ThemeProvider } from "@/client/theme";
 import { SettingsProvider } from "@/client/settings";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { AuthGate } from "@/components/auth-gate";
 
 export const metadata: Metadata = {
   title: "pi-web-frq",
@@ -79,7 +80,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <script dangerouslySetInnerHTML={{ __html: VIEWPORT_BOOTSTRAP }} />
       </head>
       <body>
-        <ThemeProvider><SettingsProvider><ErrorBoundary>{children}</ErrorBoundary></SettingsProvider></ThemeProvider>
+        <ThemeProvider><SettingsProvider><ErrorBoundary><AuthGate>{children}</AuthGate></ErrorBoundary></SettingsProvider></ThemeProvider>
       </body>
     </html>
   );

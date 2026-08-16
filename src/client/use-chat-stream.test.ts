@@ -1,6 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { ChatStreamEvent } from "@/contracts";
-import { readChatStreamEvents, reconnectDelayMs } from "./use-chat-stream";
+import { appendLiveUserMessage, appendPendingQueueItem, applyFollowUpQueueSnapshot, readChatStreamEvents, reconnectDelayMs, type ChatRun } from "./use-chat-stream";
+
+function run(id: string, sessionId: string): ChatRun {
+  return {
+    id,
+    sessionId,
+    pendingPrompt: "",
+    tools: [],
+    timeline: [],
+    text: "",
+    thinking: "",
+    retry: null,
+    runId: "",
+    error: "",
+    queued: [],
+    queueVersion: 0,
+    stopping: false,
+    tokenSpeed: 0,
+    isStreaming: true,
+    startedAt: 0,
+    finishedAt: null,
+  };
+}
 
 function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -76,5 +98,33 @@ describe("reconnectDelayMs", () => {
     expect(reconnectDelayMs(3)).toBe(8_000);
     expect(reconnectDelayMs(4)).toBe(16_000);
     expect(reconnectDelayMs(9)).toBe(16_000);
+  });
+});
+
+describe("FIFO pending queue", () => {
+  it("adds user_message to the live timeline and clears the pending prompt", () => {
+    const result = appendLiveUserMessage([run("run-a", "session-a")], "run-a", {
+      type: "user_message", content: "开始任务", timestamp: "2026-01-01T00:00:00.000Z", source: "user",
+    });
+
+    expect(result[0].pendingPrompt).toBe("");
+    expect(result[0].timeline).toEqual([{ kind: "user", content: "开始任务", timestamp: "2026-01-01T00:00:00.000Z", source: "user" }]);
+  });
+
+  it("keeps duplicate queue text as distinct FIFO entries and isolates runs", () => {
+    const initial = [run("run-a", "session-a"), run("run-b", "session-b")];
+    const withLocal = appendPendingQueueItem(initial, "run-a", { id: "local-1", content: "继续", optimistic: true }, 0);
+    const withSnapshot = applyFollowUpQueueSnapshot(withLocal, "run-a", ["继续", "继续"]);
+
+    expect(withSnapshot[0].queued.map((item) => item.content)).toEqual(["继续", "继续"]);
+    expect(withSnapshot[0].queued.map((item) => item.id)).toEqual(["local-1", expect.any(String)]);
+    expect(withSnapshot[1].queued).toEqual([]);
+  });
+
+  it("does not append a local transition item after a newer authoritative snapshot", () => {
+    const snapshotted = applyFollowUpQueueSnapshot([run("run-a", "session-a")], "run-a", ["服务端消息"]);
+    const result = appendPendingQueueItem(snapshotted, "run-a", { id: "late", content: "本地消息", optimistic: true }, 0);
+
+    expect(result[0].queued.map((item) => item.content)).toEqual(["服务端消息"]);
   });
 });

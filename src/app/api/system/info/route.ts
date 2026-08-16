@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { workspace } from "@/server/workspace";
 import { parseServicePort, parseServiceProjectRoot, parseServiceWorkspace, readServiceConfig, writeServiceConfig, DEFAULT_PROJECT_WORKSPACES_ROOT } from "@/server/service-config";
+import { getAccessKey } from "@/server/auth-key";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,10 @@ function readVersion(): string {
 
 export async function GET() {
   const port = process.env.PORT && /^\d+$/.test(process.env.PORT) ? process.env.PORT : "30142";
-  const saved = await readServiceConfig().catch(() => ({ port: Number(port), workspace, projectWorkspacesRoot: "" }));
+  const [saved, accessKey] = await Promise.all([
+    readServiceConfig().catch(() => ({ port: Number(port), workspace, projectWorkspacesRoot: "" })),
+    getAccessKey(),
+  ]);
   return NextResponse.json({
     host: "0.0.0.0",
     port,
@@ -40,6 +44,7 @@ export async function GET() {
     workspace,
     sessionDirectory: join(homedir(), ".pi", "agent", "sessions"),
     version: readVersion(),
+    accessKey,
     savedPort: saved.port,
     savedWorkspace: saved.workspace,
     projectWorkspacesRoot: process.env.PI_WEB_PROJECT_WORKSPACES_DIR ?? DEFAULT_PROJECT_WORKSPACES_ROOT,

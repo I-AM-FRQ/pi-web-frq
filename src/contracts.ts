@@ -196,6 +196,7 @@ export type LiveTimelineItem =
 
 export type ChatStreamEvent =
   | { type: "start"; runId: string; sessionId: string; prompt?: string; model?: { provider: string; id: string } }
+  | { type: "user_message"; content: string; timestamp: string; source?: "user" | "background" }
   | { type: "tool_start"; id: string; name: string; label: string }
   | { type: "tool_update"; id: string; details: SubagentDetails }
   | { type: "tool_end"; id: string; result: string; isError: boolean; details?: SubagentDetails }

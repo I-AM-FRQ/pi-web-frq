@@ -3,18 +3,43 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiErrorResponse, ChatRequest, ChatStreamEvent, LiveTimelineItem, LiveToolStep } from "@/contracts";
 
+export type PendingQueueItem = {
+  id: string;
+  content: string;
+  optimistic: boolean;
+};
+
+export type LiveUserTimelineItem = {
+  kind: "user";
+  content: string;
+  timestamp: string;
+  source?: "user" | "background";
+};
+
+export type ChatTimelineItem = LiveTimelineItem | LiveUserTimelineItem;
+
+type UserMessageEvent = {
+  type: "user_message";
+  content: string;
+  timestamp: string;
+  source?: "user" | "background";
+};
+
+type RuntimeChatStreamEvent = ChatStreamEvent | UserMessageEvent;
+
 export type ChatRun = {
   id: string;
   sessionId: string | null;
   pendingPrompt: string;
   tools: LiveToolStep[];
-  timeline: LiveTimelineItem[];
+  timeline: ChatTimelineItem[];
   text: string;
   thinking: string;
   retry: { attempt: number; maxAttempts: number; delayMs: number; message: string } | null;
   runId: string;
   error: string;
-  queued: { steering: string[]; followUp: string[] };
+  queued: PendingQueueItem[];
+  queueVersion: number;
   stopping: boolean;
   tokenSpeed: number;
   isStreaming: boolean;
@@ -50,8 +75,52 @@ function nextRunId() {
   return `run-${Date.now()}-${runSequence}`;
 }
 
+let queueItemSequence = 0;
+
+function nextQueueItemId() {
+  queueItemSequence += 1;
+  return `queue-${Date.now()}-${String(queueItemSequence).padStart(6, "0")}`;
+}
+
+export function appendPendingQueueItem(runs: ChatRun[], runId: string, item: PendingQueueItem, expectedQueueVersion: number): ChatRun[] {
+  return runs.map((run) => run.id === runId && run.queueVersion === expectedQueueVersion ? { ...run, queued: [...run.queued, item] } : run);
+}
+
+export function removePendingQueueItem(runs: ChatRun[], runId: string, itemId: string): ChatRun[] {
+  return runs.map((run) => run.id === runId ? { ...run, queued: run.queued.filter((item) => item.id !== itemId) } : run);
+}
+
+/** 服务端快照仅包含文本；按 FIFO 复用已有项的稳定 id，重复文本也保留为独立项。 */
+export function applyFollowUpQueueSnapshot(runs: ChatRun[], runId: string, followUp: readonly string[]): ChatRun[] {
+  return runs.map((run) => {
+    if (run.id !== runId) return run;
+    const available = [...run.queued];
+    const queued = followUp.map((content) => {
+      const index = available.findIndex((item) => item.content === content);
+      if (index >= 0) return available.splice(index, 1)[0];
+      return { id: nextQueueItemId(), content, optimistic: false };
+    });
+    return { ...run, queued, queueVersion: run.queueVersion + 1 };
+  });
+}
+
+function removeFirstQueuedContent(queued: PendingQueueItem[], content: string) {
+  const index = queued.findIndex((item) => item.content === content);
+  return index < 0 ? queued : [...queued.slice(0, index), ...queued.slice(index + 1)];
+}
+
+export function appendLiveUserMessage(runs: ChatRun[], runId: string, event: UserMessageEvent): ChatRun[] {
+  return runs.map((run) => run.id === runId ? {
+    ...run,
+    pendingPrompt: "",
+    queued: removeFirstQueuedContent(run.queued, event.content),
+    queueVersion: run.queueVersion + 1,
+    timeline: [...run.timeline, { kind: "user", content: event.content, timestamp: event.timestamp, source: event.source }],
+  } : run);
+}
+
 /** 追加增量到时间线末尾的同类文本块，保持事件顺序。 */
-function appendTimelineDelta(timeline: LiveTimelineItem[], kind: "text" | "thinking", delta: string): LiveTimelineItem[] {
+function appendTimelineDelta(timeline: ChatTimelineItem[], kind: "text" | "thinking", delta: string): ChatTimelineItem[] {
   const last = timeline[timeline.length - 1];
   if (last && last.kind === kind) {
     return [...timeline.slice(0, -1), { ...last, text: last.text + delta }];
@@ -59,9 +128,9 @@ function appendTimelineDelta(timeline: LiveTimelineItem[], kind: "text" | "think
   return [...timeline, { kind, text: delta }];
 }
 
-export function readChatStreamEvents(
+export function readChatStreamEvents<T extends ChatStreamEvent = ChatStreamEvent>(
   stream: ReadableStream<Uint8Array>,
-  onEvent: (event: ChatStreamEvent) => void,
+  onEvent: (event: T) => void,
 ) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -75,7 +144,7 @@ export function readChatStreamEvents(
     if (!data || data === "[DONE]") return;
 
     try {
-      onEvent(JSON.parse(data) as ChatStreamEvent);
+      onEvent(JSON.parse(data) as T);
     } catch {
       throw new Error("服务返回了无法解析的流事件。");
     }
@@ -146,6 +215,18 @@ export function useChatStream() {
   const reconnectFnsRef = useRef<Map<string, () => void>>(new Map());
   const callbacksBySessionRef = useRef<Map<string, StreamCallbacks>>(new Map());
   const speedSamplesRef = useRef<Map<string, Array<{ chars: number; time: number }>>>(new Map());
+  const finishReconnectRef = useRef<(runId: string) => void>((runId) => {
+    reconnectingRunsRef.current.delete(runId);
+    reconnectSessionIdsRef.current.delete(runId);
+    reconnectAttemptsRef.current.delete(runId);
+    reconnectFnsRef.current.delete(runId);
+    const timer = reconnectTimersRef.current.get(runId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      reconnectTimersRef.current.delete(runId);
+    }
+  });
+  const scheduleReconnectRef = useRef<(runId: string, sessionId: string, callbacks: StreamCallbacks) => void>(() => {});
   const [runs, setRuns] = useState<ChatRun[]>([]);
 
   const updateRun = useCallback((id: string, patch: Partial<ChatRun>) => {
@@ -164,11 +245,11 @@ export function useChatStream() {
     updateRun(id, { tokenSpeed: span > 0.3 ? Math.round(totalChars / CHARS_PER_TOKEN / span) : 0 });
   }, [updateRun]);
 
-  const applyStreamEvent = useCallback((id: string, event: ChatStreamEvent, callbacks: StreamCallbacks) => {
+  const applyStreamEvent = useCallback((id: string, event: RuntimeChatStreamEvent, callbacks: StreamCallbacks) => {
     if (event.type === "start") {
       runSessionIdsRef.current.set(id, event.sessionId);
       activeSessionIdsRef.current.add(event.sessionId);
-      setRuns((current) => current.map((run) => run.id === id ? { ...run, runId: event.runId, sessionId: event.sessionId, pendingPrompt: event.prompt ?? run.pendingPrompt } : run));
+      setRuns((current) => current.map((run) => run.id === id ? { ...run, runId: event.runId, sessionId: event.sessionId, pendingPrompt: run.timeline.some((item) => item.kind === "user") ? "" : event.prompt ?? run.pendingPrompt } : run));
       callbacks.onSessionId?.(event.sessionId);
     }
     if (event.type === "tool_start") {
@@ -208,19 +289,21 @@ export function useChatStream() {
       updateRun(id, { retry: null });
     }
     if (event.type === "queue_update") {
-      updateRun(id, { queued: { steering: [...event.steering], followUp: [...event.followUp] } });
+      setRuns((current) => applyFollowUpQueueSnapshot(current, id, event.followUp));
+    }
+    if (event.type === "user_message") {
+      setRuns((current) => appendLiveUserMessage(current, id, event));
     }
     if (event.type === "error") {
-      finishReconnect(id);
+      finishReconnectRef.current(id);
       setRuns((current) => current.map((run) => run.id === id ? { ...run, error: run.stopping ? "已停止。" : event.message, isStreaming: false, tools: [], finishedAt: Date.now() } : run));
     }
     if (event.type === "done") {
-      finishReconnect(id);
-      updateRun(id, { sessionId: event.sessionId, tools: [], finishedAt: Date.now() });
+      finishReconnectRef.current(id);
+      updateRun(id, { sessionId: event.sessionId, tools: [], finishedAt: Date.now(), isStreaming: false });
       callbacks.onSessionId?.(event.sessionId);
       callbacks.onCompleted?.(event.sessionId, id);
       speedSamplesRef.current.delete(id);
-      window.setTimeout(() => setRuns((current) => current.filter((run) => run.id !== id)), 1200);
     }
   }, [recordSpeedSample, updateRun]);
 
@@ -239,7 +322,7 @@ export function useChatStream() {
       const withoutSameSession = request.sessionId
         ? current.filter((run) => run.sessionId !== request.sessionId)
         : current;
-      return [...withoutSameSession, { id, sessionId: request.sessionId ?? null, pendingPrompt, tools: [], timeline: [], text: "", thinking: "", retry: null, runId: "", error: "", queued: { steering: [], followUp: [] }, stopping: false, tokenSpeed: 0, isStreaming: true, startedAt: Date.now(), finishedAt: null, replay: false }];
+      return [...withoutSameSession, { id, sessionId: request.sessionId ?? null, pendingPrompt, tools: [], timeline: [], text: "", thinking: "", retry: null, runId: "", error: "", queued: [], queueVersion: 0, stopping: false, tokenSpeed: 0, isStreaming: true, startedAt: Date.now(), finishedAt: null, replay: false }];
     });
 
     void (async () => {
@@ -266,7 +349,7 @@ export function useChatStream() {
         if (!response.body) throw new Error("服务未返回可读取的数据流。");
 
         let terminalReceived = false;
-        await readChatStreamEvents(response.body, (event) => {
+        await readChatStreamEvents<RuntimeChatStreamEvent>(response.body, (event) => {
           if (event.type === "error") receivedError = true;
           if (event.type === "done" || event.type === "error") terminalReceived = true;
           applyStreamEvent(id, event, callbacks);
@@ -277,9 +360,8 @@ export function useChatStream() {
           // 流意外中断（手机切后台/断网）：会话已绑定则自动重连恢复，不判死
           const sessionId = runSessionIdsRef.current.get(id) ?? request.sessionId ?? null;
           if (sessionId) {
-            reconnectingRunsRef.current.add(id);
             callbacksBySessionRef.current.set(sessionId, callbacks);
-            scheduleReconnect(id, sessionId, callbacks);
+            scheduleReconnectRef.current(id, sessionId, callbacks);
           } else {
             controller.abort();
             receivedError = true;
@@ -292,7 +374,7 @@ export function useChatStream() {
       } finally {
         if (!controller.signal.aborted && !receivedError && !reconnectingRunsRef.current.has(id)) updateRun(id, { error: "" });
         if (!reconnectingRunsRef.current.has(id)) updateRun(id, { isStreaming: false, finishedAt: Date.now() });
-        controllersRef.current.delete(id);
+        if (controllersRef.current.get(id) === controller) controllersRef.current.delete(id);
         const activeSessionId = runSessionIdsRef.current.get(id);
         runSessionIdsRef.current.delete(id);
         if (activeSessionId) activeSessionIdsRef.current.delete(activeSessionId);
@@ -302,19 +384,6 @@ export function useChatStream() {
 
     return true;
   }, [applyStreamEvent, updateRun]);
-
-  /** 清除指定 run 的全部重连状态。 */
-  const finishReconnect = useCallback((runId: string) => {
-    reconnectingRunsRef.current.delete(runId);
-    reconnectSessionIdsRef.current.delete(runId);
-    reconnectAttemptsRef.current.delete(runId);
-    reconnectFnsRef.current.delete(runId);
-    const timer = reconnectTimersRef.current.get(runId);
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
-      reconnectTimersRef.current.delete(runId);
-    }
-  }, []);
 
   /**
    * 自动重连：对已绑定会话的运行重新接入 /api/chat/[sessionId]/stream 重放流。
@@ -337,21 +406,22 @@ export function useChatStream() {
           const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/stream`, { cache: "no-store", signal: controller.signal });
           if (response.status === 404) {
             // 服务端已无活跃运行：任务已完成，结束重连并刷新详情
-            finishReconnect(runId);
+            finishReconnectRef.current(runId);
             updateRun(runId, { isStreaming: false, finishedAt: Date.now(), error: "" });
             callbacks.onCompleted?.(sessionId, runId);
             return;
           }
           if (!response.ok) throw new Error(`无法恢复任务（HTTP ${response.status}）。`);
           if (!response.body) throw new Error("服务未返回可读取的数据流。");
-          updateRun(runId, { error: "" });
-          await readChatStreamEvents(response.body, (event) => {
+          // 重放流包含完整历史：原子重建内容，避免与断线前残留叠加产生重复
+          updateRun(runId, { error: "", timeline: [], text: "", thinking: "", tools: [] });
+          await readChatStreamEvents<RuntimeChatStreamEvent>(response.body, (event) => {
             if (event.type === "done" || event.type === "error") terminalReceived = true;
             applyStreamEvent(runId, event, callbacks);
           });
           if (!terminalReceived && !controller.signal.aborted) throw new Error("连接再次中断。");
-          finishReconnect(runId);
-        } catch (caught) {
+          finishReconnectRef.current(runId);
+        } catch {
           if (!controller.signal.aborted) {
             const attemptCount = (reconnectAttemptsRef.current.get(runId) ?? 0) + 1;
             reconnectAttemptsRef.current.set(runId, attemptCount);
@@ -361,7 +431,7 @@ export function useChatStream() {
             reconnectFnsRef.current.set(runId, fn);
             reconnectTimersRef.current.set(runId, window.setTimeout(fn, delay));
           } else {
-            finishReconnect(runId);
+            finishReconnectRef.current(runId);
           }
         } finally {
           controllersRef.current.delete(runId);
@@ -369,7 +439,11 @@ export function useChatStream() {
       })();
     };
     attempt();
-  }, [applyStreamEvent, finishReconnect, updateRun]);
+  }, [applyStreamEvent, updateRun]);
+
+  useEffect(() => {
+    scheduleReconnectRef.current = scheduleReconnect;
+  }, [scheduleReconnect]);
 
   const resume = useCallback((sessionId: string, callbacks: StreamCallbacks = {}) => {
     if (activeSessionIdsRef.current.has(sessionId)) return false;
@@ -378,7 +452,7 @@ export function useChatStream() {
     const id = nextRunId();
     const controller = new AbortController();
     controllersRef.current.set(id, controller);
-    setRuns((current) => [...current.filter((run) => run.sessionId !== sessionId), { id, sessionId, pendingPrompt: "", tools: [], timeline: [], text: "", thinking: "", retry: null, runId: "", error: "", queued: { steering: [], followUp: [] }, stopping: false, tokenSpeed: 0, isStreaming: true, startedAt: Date.now(), finishedAt: null, replay: true }]);
+    setRuns((current) => [...current.filter((run) => run.sessionId !== sessionId), { id, sessionId, pendingPrompt: "", tools: [], timeline: [], text: "", thinking: "", retry: null, runId: "", error: "", queued: [], queueVersion: 0, stopping: false, tokenSpeed: 0, isStreaming: true, startedAt: Date.now(), finishedAt: null, replay: true }]);
 
     void (async () => {
       let terminalReceived = false;
@@ -395,7 +469,7 @@ export function useChatStream() {
           throw new Error(`无法恢复任务（HTTP ${response.status}）。`);
         }
         if (!response.body) throw new Error("服务未返回可读取的数据流。");
-        await readChatStreamEvents(response.body, (event) => {
+        await readChatStreamEvents<RuntimeChatStreamEvent>(response.body, (event) => {
           if (event.type === "error") receivedError = true;
           if (event.type === "done" || event.type === "error") terminalReceived = true;
           applyStreamEvent(id, event, callbacks);
@@ -404,15 +478,14 @@ export function useChatStream() {
       } catch (caught) {
         if (!controller.signal.aborted && !receivedError) {
           // 恢复流中断：进入自动重连（复用当前 run 的 id 与回调）
-          reconnectingRunsRef.current.add(id);
           callbacksBySessionRef.current.set(sessionId, callbacks);
-          scheduleReconnect(id, sessionId, callbacks);
+          scheduleReconnectRef.current(id, sessionId, callbacks);
         } else if (!controller.signal.aborted) {
           receivedError = true;
           updateRun(id, { error: caught instanceof Error ? caught.message : "无法恢复任务。" });
         }
       } finally {
-        controllersRef.current.delete(id);
+        if (controllersRef.current.get(id) === controller) controllersRef.current.delete(id);
         runSessionIdsRef.current.delete(id);
         activeSessionIdsRef.current.delete(sessionId);
         if (!activeRunFound) setRuns((current) => current.filter((run) => run.id !== id));
@@ -421,19 +494,36 @@ export function useChatStream() {
       }
     })();
     return true;
-  }, [applyStreamEvent, scheduleReconnect, updateRun]);
+  }, [applyStreamEvent, updateRun]);
 
   /** 主动移除一条运行（详情刷新完成后调用，避免实时/历史重复渲染造成闪烁）。 */
   const removeRun = useCallback((runId: string) => {
     speedSamplesRef.current.delete(runId);
-    setRuns((current) => current.filter((run) => run.id !== runId));
+    setRuns((current) => {
+      const next = current.filter((run) => run.id !== runId);
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
+  const createPendingQueueItem = useCallback((content: string): PendingQueueItem => ({
+    id: nextQueueItemId(),
+    content,
+    optimistic: true,
+  }), []);
+
+  const addPendingQueueItem = useCallback((runId: string, item: PendingQueueItem, expectedQueueVersion: number) => {
+    setRuns((current) => appendPendingQueueItem(current, runId, item, expectedQueueVersion));
+  }, []);
+
+  const removePendingQueueItemForRun = useCallback((runId: string, itemId: string) => {
+    setRuns((current) => removePendingQueueItem(current, runId, itemId));
   }, []);
 
   const stop = useCallback((runId: string) => {
     updateRun(runId, { stopping: true });
-    finishReconnect(runId);
+    const sessionId = runSessionIdsRef.current.get(runId) ?? reconnectSessionIdsRef.current.get(runId) ?? null;
+    finishReconnectRef.current(runId);
     const controller = controllersRef.current.get(runId);
-    const sessionId = runSessionIdsRef.current.get(runId);
     if (sessionId) {
       void fetch("/api/chat/stop", {
         method: "POST",
@@ -459,10 +549,11 @@ export function useChatStream() {
 
   useEffect(() => {
     const controllers = controllersRef.current;
+    const reconnectTimers = reconnectTimersRef.current;
     return () => {
       controllers.forEach((controller) => controller.abort());
-      for (const timer of reconnectTimersRef.current.values()) window.clearTimeout(timer);
-      reconnectTimersRef.current.clear();
+      for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
+      reconnectTimers.clear();
     };
   }, []);
 
@@ -484,5 +575,5 @@ export function useChatStream() {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
-  return { runs, runFor, runningSessionIds, send, resume, stop, removeRun };
+  return { runs, runFor, runningSessionIds, send, resume, stop, removeRun, createPendingQueueItem, addPendingQueueItem, removePendingQueueItemForRun };
 }

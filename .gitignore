@@ -18,3 +18,5 @@ verify_extended.py
 verify_known.py
 verify_three_gods.py
 verify4.py
+.agent-bus/
+# FRQ agent 总线运行数据（含会话内容，勿提交）

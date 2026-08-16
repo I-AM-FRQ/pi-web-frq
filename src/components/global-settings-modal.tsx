@@ -5,6 +5,8 @@ import { useTheme, type Theme } from "@/client/theme";
 import { useSettings, type FontStyle, type WorkbenchSettings } from "@/client/settings";
 import { PromptFileEditorDialog } from "@/components/prompt-file-editor-dialog";
 import type { ModelDescriptor, ThinkingLevel } from "@/contracts";
+import { copyTextToClipboard } from "@/client/clipboard";
+import { ACCESS_KEY_STORAGE } from "@/client/use-auth";
 
 type GlobalSettingsModalProps = {
   models: ModelDescriptor[];
@@ -23,6 +25,7 @@ type SystemInfo = {
   savedWorkspace: string;
   projectWorkspacesRoot: string;
   savedProjectWorkspacesRoot: string;
+  accessKey?: string;
 };
 
 type SettingsSectionId = "system" | "appearance" | "session";
@@ -112,6 +115,9 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
   const [serviceDirty, setServiceDirty] = useState(false);
   const [serviceSaving, setServiceSaving] = useState(false);
   const [serviceNotice, setServiceNotice] = useState("");
+  const [accessKey, setAccessKey] = useState("");
+  const [accessKeyBusy, setAccessKeyBusy] = useState(false);
+  const [accessKeyNotice, setAccessKeyNotice] = useState("");
   const [customPrompt, setCustomPrompt] = useState("");
   const [customPromptDirty, setCustomPromptDirty] = useState(false);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
@@ -130,6 +136,7 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
         setPortDraft(String(payload.savedPort));
         setWorkspaceDraft(payload.savedWorkspace);
         setProjectRootDraft(payload.savedProjectWorkspacesRoot);
+        setAccessKey(payload.accessKey ?? "");
         setServiceDirty(false);
       } catch (caught) {
         setSystemInfoError(caught instanceof Error ? caught.message : "无法读取服务信息。");
@@ -170,6 +177,36 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
         setServiceNotice(caught instanceof Error ? caught.message : "保存失败。");
       } finally {
         setServiceSaving(false);
+      }
+    })();
+  };
+
+  const copyAccessKey = () => {
+    if (!accessKey) return;
+    void copyTextToClipboard(accessKey).then(() => setAccessKeyNotice("已复制密钥。"), () => setAccessKeyNotice("复制失败，请重试。"));
+  };
+
+  const regenerateAccessKey = () => {
+    setAccessKeyBusy(true);
+    setAccessKeyNotice("");
+    void (async () => {
+      try {
+        const response = await fetch("/api/auth/regenerate", { method: "POST" });
+        const payload = await response.json() as { key?: unknown; error?: { message?: unknown } };
+        if (!response.ok || typeof payload.key !== "string" || !payload.key) throw new Error(typeof payload.error?.message === "string" ? payload.error.message : "重新生成密钥失败。");
+        setAccessKey(payload.key);
+        try { localStorage.setItem(ACCESS_KEY_STORAGE, payload.key); } catch { /* 隐私模式 */ }
+        const loginResponse = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: payload.key }),
+        });
+        if (!loginResponse.ok) throw new Error("新密钥已生成，但当前浏览器未能重新登录。");
+        setAccessKeyNotice("已更新，其他设备需用新密钥重新登录。");
+      } catch (caught) {
+        setAccessKeyNotice(caught instanceof Error ? caught.message : "重新生成密钥失败。");
+      } finally {
+        setAccessKeyBusy(false);
       }
     })();
   };
@@ -250,6 +287,15 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
               <div><strong>局域网访问</strong></div>
               <div className="settings-value-stack">{lanAddresses.length ? lanAddresses.map((url) => <code key={url}>{url}</code>) : <code>未检测到</code>}</div>
             </div>
+          </section>
+
+          <section className="settings-section-block" aria-label="访问密钥">
+            <h4>访问密钥</h4>
+            <div className="settings-row access-key-row">
+              <div><strong>局域网访问密钥</strong><span>用于其他设备登录此工作区</span></div>
+              <div className="access-key-control"><code>{accessKey || "…"}</code><button type="button" className="settings-secondary" onClick={copyAccessKey} disabled={!accessKey} aria-label="复制访问密钥" title="复制访问密钥">复制</button><button type="button" className="settings-primary" onClick={regenerateAccessKey} disabled={accessKeyBusy}>{accessKeyBusy ? "生成中…" : "重新生成"}</button></div>
+            </div>
+            {accessKeyNotice ? <p className={`settings-note${accessKeyNotice.startsWith("已") ? "" : " error"}`} role="status">{accessKeyNotice}</p> : null}
           </section>
 
           <section className="settings-section-block" aria-label="工作区">

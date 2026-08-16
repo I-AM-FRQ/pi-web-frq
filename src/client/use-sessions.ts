@@ -121,7 +121,7 @@ export function useSessions() {
     }
   }, []);
 
-  const selectSession = useCallback((sessionId: string | null) => {
+  const selectSession = useCallback((sessionId: string | null, options?: { loadDetail?: boolean }) => {
     if (selectedSessionIdRef.current === sessionId) return;
     selectedSessionIdRef.current = sessionId;
     detailControllerRef.current?.abort();
@@ -131,7 +131,7 @@ export function useSessions() {
     persistSelected({ projectId: selectedProjectIdRef.current, sessionId });
     if (sessionId) {
       markSessionSeen(sessionId);
-      void loadDetail(sessionId);
+      if (options?.loadDetail !== false) void loadDetail(sessionId);
     }
   }, [loadDetail, markSessionSeen]);
 

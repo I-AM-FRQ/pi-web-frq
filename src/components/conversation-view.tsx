@@ -1,13 +1,16 @@
 "use client";
 
-import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { ChatMarkdown } from "@/components/chat-markdown";
-import type { ConversationItem, LiveTimelineItem, ModelDescriptor } from "@/contracts";
+import { RuntimeTimelineContent, type RuntimeTimelineItem } from "@/components/runtime-timeline";
+import type { ChatTimelineItem, PendingQueueItem } from "@/client/use-chat-stream";
+import type { ConversationItem, ModelDescriptor } from "@/contracts";
 
 type ConversationViewProps = {
   conversation: ConversationItem[];
   pendingPrompt: string;
-  timeline: LiveTimelineItem[];
+  timeline: ChatTimelineItem[];
+  pendingQueue: PendingQueueItem[];
   retry: { attempt: number; maxAttempts: number; delayMs: number; message: string } | null;
   error: string;
   isStreaming: boolean;
@@ -93,55 +96,6 @@ function imagesBeforeText(content: string) {
   return images && text ? `${images}\n\n${text}` : images || text;
 }
 
-/** 完成后的思考 + 执行过程折叠区，标题带整个执行时间。 */
-function ExecutionCollapse({ label, children }: { label: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <details className="execution-collapse" open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
-      <summary>{label}</summary>
-      <div className="execution-collapse-body">{children}</div>
-    </details>
-  );
-}
-
-/** Codex 风格工具/命令单元格：点击已完成步骤可查看 Pi 保存的原始返回。 */
-function ToolSteps({ tools }: { tools: Array<{ id: string; name: string; label: string; result?: string; isError: boolean; running: boolean }> }) {
-  const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(() => new Set());
-  if (tools.length === 0) return null;
-  return (
-    <div className="codex-tool-steps">
-      {tools.map((tool) => {
-        const parts = tool.label.split("·").map((part) => part.trim());
-        const canExpand = !tool.running && tool.result !== undefined;
-        const expanded = expandedToolIds.has(tool.id);
-        const outputId = `tool-output-${tool.id}`;
-        return (
-          <div key={tool.id} className={`codex-tool-step${tool.isError ? " failed" : ""}${tool.running ? " running" : ""}${expanded ? " expanded" : ""}`}>
-            <button
-              type="button"
-              className="codex-tool-trigger"
-              disabled={!canExpand}
-              aria-expanded={canExpand ? expanded : undefined}
-              aria-controls={canExpand ? outputId : undefined}
-              onClick={() => setExpandedToolIds((current) => {
-                const next = new Set(current);
-                if (next.has(tool.id)) next.delete(tool.id);
-                else next.add(tool.id);
-                return next;
-              })}
-            >
-              <span className="codex-tool-bullet" aria-hidden="true">{tool.running ? <i className="codex-spinner" /> : tool.isError ? "✗" : "✓"}</span>
-              <span className="codex-tool-name">{parts[0]}</span>
-              {parts.length > 1 ? <span className="codex-tool-args">{parts.slice(1).join(" · ")}</span> : null}
-              {canExpand ? <span className="codex-tool-disclosure" aria-hidden="true">{expanded ? "⌄" : "›"}</span> : null}
-            </button>
-            {expanded ? <pre id={outputId} className="codex-tool-output">{tool.result}</pre> : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function UserMessage({ content, timestamp, pending, entryId, onAction }: { content: string; timestamp?: string; pending?: boolean; entryId?: string; onAction?: (action: "copy" | "edit" | "fork", content: string, entryId?: string) => void }) {
   return (
@@ -170,29 +124,20 @@ function HistoricalTask({ task, models, onUserMessageAction }: { task: TaskGroup
   const finalIndex = items.map((item) => item.type).lastIndexOf("assistant");
   const user = items.find((item) => item.type === "user");
   const finalItem = finalIndex >= 0 ? (items[finalIndex] as Extract<ConversationItem, { type: "assistant" }>) : undefined;
-  const executionItems = items.filter((item, index) => item.type === "thinking" || item.type === "tool" || (item.type === "assistant" && index !== finalIndex));
+  const executionItems: RuntimeTimelineItem[] = items.filter((item, index) => item.type === "thinking" || item.type === "tool" || (item.type === "assistant" && index !== finalIndex)).map((item) => {
+    if (item.type === "tool") return { kind: "tool", id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: false };
+    if (item.type === "thinking") return { kind: "thinking", text: item.content };
+    if (item.type === "assistant") return { kind: "text", text: item.content, isError: item.isError };
+    return { kind: "status", text: "状态已更新" };
+  });
   return (
     <section className="task-group">
       {user ? <UserMessage content={user.content} timestamp={user.timestamp} entryId={user.id} onAction={onUserMessageAction} /> : null}
-      {executionItems.length > 0 ? (
-        <ExecutionCollapse label={`思考与执行过程${duration ? ` · ${duration}` : ""}`}>
-          {executionItems.map((item, index) => {
-            if (item.type === "tool") return <ToolSteps key={item.id} tools={[{ ...item, running: false }]} />;
-            if (item.type === "thinking") return <div className="thinking-content" key={`${item.timestamp}-${index}`}>{item.content}</div>;
-            return <div className="execution-inline" key={`${item.timestamp}-${index}`}><ChatMarkdown content={item.content} /></div>;
-          })}
-        </ExecutionCollapse>
-      ) : null}
-      {finalItem ? (
-        <>
-          <div className="final-separator" aria-hidden="true" />
-          <article className={`assistant-reply${finalItem.isError ? " failed" : ""}`}>
-            <header><span className="assistant-model">{modelLabel(finalItem.model, models)}</span><time>{timeLabel(finalItem.timestamp)}</time></header>
-            <div className="message-body"><ChatMarkdown content={finalItem.content} /></div>
-            {finalItem.isError ? <p className="chat-error" role="alert">此任务未能完成。</p> : null}
-          </article>
-        </>
-      ) : null}
+      {executionItems.length > 0 ? <RuntimeTimelineContent items={executionItems} isStreaming={false} variant="execution" executionLabel={`思考与执行过程${duration ? ` · ${duration}` : ""}`} /> : null}
+      {finalItem ? <>
+        <div className="final-separator" aria-hidden="true" />
+        <RuntimeTimelineContent items={[{ kind: "text", text: finalItem.content, isError: finalItem.isError }]} isStreaming={false} modelName={modelLabel(finalItem.model, models)} runLabel={timeLabel(finalItem.timestamp)} />
+      </> : null}
     </section>
   );
 }
@@ -200,8 +145,8 @@ function HistoricalTask({ task, models, onUserMessageAction }: { task: TaskGroup
 const STREAM_BOTTOM_INSET = 220;
 const STREAM_TOP_INSET = 32;
 
-export const ConversationView = memo(function ConversationView({ conversation, pendingPrompt, timeline, retry, error, isStreaming, runId, isLoading, truncated, onLoadEarlier, loadingEarlier = false, models, liveModelName, onUserMessageAction, runStartedAt, runFinishedAt, runReplay = false }: ConversationViewProps) {
-  const hasLiveResponse = Boolean(pendingPrompt || timeline.length > 0 || error || isStreaming);
+export const ConversationView = memo(function ConversationView({ conversation, pendingPrompt, timeline, pendingQueue, retry, error, isStreaming, runId, isLoading, truncated, onLoadEarlier, loadingEarlier = false, models, liveModelName, onUserMessageAction, runStartedAt, runFinishedAt, runReplay = false }: ConversationViewProps) {
+  const hasLiveResponse = Boolean(pendingPrompt || timeline.length > 0 || pendingQueue.length > 0 || error || isStreaming);
   const tasks = useMemo(() => taskGroups(conversation), [conversation]);
   const conversationKey = `${conversation.length}:${conversation.at(-1)?.timestamp ?? ""}`;
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -215,6 +160,16 @@ export const ConversationView = memo(function ConversationView({ conversation, p
   const loadEarlierRequestedRef = useRef(false);
   const earlierScrollSnapshotRef = useRef<{ height: number; top: number; itemCount: number } | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+
+  const scrollToBottomIfNeeded = useCallback(() => {
+    const container = conversationRef.current;
+    if (!container) return false;
+    const target = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (Math.abs(container.scrollTop - target) < 1) return false;
+    container.scrollTop = target;
+    lastScrollTopRef.current = container.scrollTop;
+    return true;
+  }, []);
 
   const requestEarlierConversation = () => {
     const container = conversationRef.current;
@@ -268,12 +223,11 @@ export const ConversationView = memo(function ConversationView({ conversation, p
     }
     if (!container || browsingHistoryRef.current) return;
     if (shouldScrollAfterLoadingRef.current || shouldStickToBottomRef.current) {
-      container.scrollTop = container.scrollHeight;
-      lastScrollTopRef.current = container.scrollTop;
+      scrollToBottomIfNeeded();
       shouldStickToBottomRef.current = true;
       shouldScrollAfterLoadingRef.current = false;
     }
-  }, [conversation, conversationKey, error, isLoading, isStreaming, pendingPrompt, timeline]);
+  }, [conversation, conversationKey, error, isLoading, isStreaming, pendingPrompt, pendingQueue, scrollToBottomIfNeeded, timeline]);
 
   // 按当前任务实际高度计算底部留白，使任务起点尽量贴近聊天区顶部。
   useLayoutEffect(() => {
@@ -285,18 +239,16 @@ export const ConversationView = memo(function ConversationView({ conversation, p
     }
     const updateLiveTaskSpace = () => {
       const space = Math.max(0, container.clientHeight - STREAM_BOTTOM_INSET - STREAM_TOP_INSET - liveTask.offsetHeight);
-      container.style.setProperty("--live-task-space", `${Math.ceil(space)}px`);
-      if (shouldStickToBottomRef.current && !browsingHistoryRef.current) {
-        container.scrollTop = container.scrollHeight;
-        lastScrollTopRef.current = container.scrollTop;
-      }
+      const value = `${Math.ceil(space)}px`;
+      if (container.style.getPropertyValue("--live-task-space") !== value) container.style.setProperty("--live-task-space", value);
+      if (shouldStickToBottomRef.current && !browsingHistoryRef.current) scrollToBottomIfNeeded();
     };
     const observer = new ResizeObserver(updateLiveTaskSpace);
     observer.observe(container);
     observer.observe(liveTask);
     updateLiveTaskSpace();
     return () => observer.disconnect();
-  }, [isStreaming]);
+  }, [isStreaming, scrollToBottomIfNeeded]);
 
   // 内容高度变化（工具展开、图片加载、markdown 延迟渲染等）时同样保持底部。
   useLayoutEffect(() => {
@@ -304,19 +256,12 @@ export const ConversationView = memo(function ConversationView({ conversation, p
     const rail = railRef.current;
     if (!container || !rail) return;
     const observer = new ResizeObserver(() => {
-      if (shouldStickToBottomRef.current && !browsingHistoryRef.current && !isLoading) {
-        container.scrollTop = container.scrollHeight;
-        lastScrollTopRef.current = container.scrollTop;
-      }
+      if (shouldStickToBottomRef.current && !browsingHistoryRef.current && !isLoading) scrollToBottomIfNeeded();
     });
     observer.observe(rail);
     return () => observer.disconnect();
-  }, [isLoading]);
+  }, [isLoading, scrollToBottomIfNeeded]);
 
-  // 实时：把时间线拆成“思考+工具+中间文本”（执行过程）和“最终回复”。
-  const lastTextIndex = timeline.map((item) => item.kind).lastIndexOf("text");
-  const executionTimeline = lastTextIndex >= 0 ? timeline.filter((item, index) => index !== lastTextIndex) : timeline;
-  const finalTimelineText = lastTextIndex >= 0 ? (timeline[lastTextIndex] as Extract<LiveTimelineItem, { kind: "text" }>) : null;
   // 重放（刷新后恢复）的 run 不计耗时：其 startedAt/finishedAt 是重放耗时而非真实执行时间。
   const runDuration = !runReplay && runStartedAt && runFinishedAt ? formatDuration(runFinishedAt - runStartedAt) : null;
   const isFinished = !isStreaming;
@@ -364,21 +309,16 @@ export const ConversationView = memo(function ConversationView({ conversation, p
               <>
                 {retry ? <div className="retry-status" role="status">上游服务繁忙，{Math.max(1, Math.ceil(retry.delayMs / 1000))} 秒后进行第 {retry.attempt}/{retry.maxAttempts} 次重试。</div> : null}
                 {timeline.length === 0 && !retry ? <div className="thinking-content">正在思考…</div> : null}
-                {timeline.map((item, index) => {
-                  if (item.kind === "tool") {
-                    return <ToolSteps key={`${item.id}-${index}`} tools={[{ id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: item.running }]} />;
-                  }
-                  if (item.kind === "thinking") {
-                    return <div className="thinking-content" key={index}><ChatMarkdown content={item.text} /></div>;
-                  }
-                  return (
-                    <article key={index} className="assistant-reply live">
-                      <header><span className="assistant-model">{liveModelName}</span><time>{runId ? runId.slice(0, 8) : "进行中"}</time></header>
-                      <div className="message-body"><ChatMarkdown content={item.text} /></div>
-                    </article>
-                  );
-                })}
+                <RuntimeTimelineContent items={timeline.map((item): RuntimeTimelineItem => item.kind === "tool" ? { kind: "tool", id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: item.running } : item.kind === "thinking" ? { kind: "thinking", text: item.text } : item.kind === "user" ? { kind: "user", content: item.content, timestamp: item.timestamp } : { kind: "text", text: item.text })} isStreaming modelName={liveModelName} runLabel={runId ? runId.slice(0, 8) : "进行中"} />
               </>
+            ) : null}
+            {pendingQueue.length > 0 ? (
+              <section className="pending-queue" aria-label="待处理消息" role="status">
+                <header><span>待处理消息</span><span>{pendingQueue.length}</span></header>
+                <ol>
+                  {pendingQueue.map((item, index) => <li key={item.id}><span className="pending-queue-order">{index + 1}</span><div><span className="pending-queue-state">等待处理</span><ChatMarkdown content={imagesBeforeText(item.content)} /></div></li>)}
+                </ol>
+              </section>
             ) : null}
           </div>
         ) : pendingPrompt ? <UserMessage content={pendingPrompt} pending /> : null}
@@ -386,26 +326,7 @@ export const ConversationView = memo(function ConversationView({ conversation, p
         {/* 完成：思考+执行过程折叠，最终回复保留在外 */}
         {isFinished && timeline.length > 0 ? (
           <>
-            <ExecutionCollapse label={`思考与执行过程${runDuration ? ` · ${runDuration}` : ""}`}>
-              {executionTimeline.length > 0 ? executionTimeline.map((item, index) => {
-                if (item.kind === "tool") {
-                  return <ToolSteps key={`${item.id}-${index}`} tools={[{ id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: item.running }]} />;
-                }
-                if (item.kind === "thinking") {
-                  return <div className="thinking-content" key={index}><ChatMarkdown content={item.text} /></div>;
-                }
-                return <div className="execution-inline" key={index}><ChatMarkdown content={item.text} /></div>;
-              }) : <p className="execution-unavailable">此模型未返回可展示的思考或工具事件。</p>}
-            </ExecutionCollapse>
-            {finalTimelineText ? (
-              <>
-                <div className="final-separator" aria-hidden="true" />
-                <article className={`assistant-reply live${error ? " failed" : ""}`}>
-                  <header><span className="assistant-model">{liveModelName}</span><time>{runId ? runId.slice(0, 8) : "进行中"}</time></header>
-                  <div className="message-body"><ChatMarkdown content={finalTimelineText.text} /></div>
-                </article>
-              </>
-            ) : null}
+            <RuntimeTimelineContent items={timeline.map((item): RuntimeTimelineItem => item.kind === "tool" ? { kind: "tool", id: item.id, name: item.name, label: item.label, result: item.result, isError: item.isError, running: item.running } : item.kind === "thinking" ? { kind: "thinking", text: item.text } : item.kind === "user" ? { kind: "user", content: item.content, timestamp: item.timestamp } : { kind: "text", text: item.text })} isStreaming={false} variant="completed" modelName={liveModelName} runLabel={runId ? runId.slice(0, 8) : "进行中"} error={error} executionLabel={`思考与执行过程${runDuration ? ` · ${runDuration}` : ""}`} />
           </>
         ) : null}
         {error ? <p className="chat-error" role="alert">{error}</p> : null}

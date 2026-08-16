@@ -11,6 +11,7 @@ import { assignSessionToProject } from "@/server/projects";
 import { branchPersistentSession, invalidateSessionIndex, SessionEntryNotFoundError, SessionNotFoundError } from "@/server/sessions";
 import { createProjectPersistentSession, openProjectPersistentSession, projectIdForSession, workspaceForProject, workspaceForSession } from "@/server/session-workspaces";
 import { expandWorkspaceReferences } from "@/server/file-references";
+import { userMessageStreamEvent } from "@/server/chat-user-message";
 import { toolResultText, toolStepLabel, sanitizeSubagentDetails } from "@/server/session-projection";
 import { AttachmentValidationError, storeImageAttachments } from "@/server/attachments";
 import { SSE_HEADERS, sseEvent } from "@/server/sse";
@@ -326,6 +327,8 @@ export async function POST(request: NextRequest) {
         if (event.type === "message_start") {
           streamedAssistantText = "";
           streamedThinkingText = "";
+          const userMessage = userMessageStreamEvent(event.message);
+          if (userMessage) publishActiveChatRunEvent(sessionId, userMessage);
         }
         if (event.type === "message_update") {
           const message = event.message;
