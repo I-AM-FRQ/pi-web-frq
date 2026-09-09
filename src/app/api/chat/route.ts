@@ -6,7 +6,7 @@ import type { ChatStreamEvent, ThinkingLevel } from "@/contracts";
 import { ChatRequestValidationError, parseChatRequest } from "@/server/chat-request";
 import { createChatSession, getAvailableModels, thinkingLevelsFor, type AvailableModel } from "@/server/pi";
 import { tryLockSession } from "@/server/session-lock";
-import { activeChatRunStopRequested, publishActiveChatRunEvent, registerActiveChatRun, subscribeToActiveChatRun, unregisterActiveChatRun } from "@/server/active-chat-runs";
+import { activeChatRunStopRequested, activeChatSession, publishActiveChatRunEvent, registerActiveChatRun, subscribeToActiveChatRun, unregisterActiveChatRun } from "@/server/active-chat-runs";
 import { assignSessionToProject } from "@/server/projects";
 import { branchPersistentSession, invalidateSessionIndex, SessionEntryNotFoundError, SessionNotFoundError } from "@/server/sessions";
 import { createProjectPersistentSession, openProjectPersistentSession, projectIdForSession, workspaceForProject, workspaceForSession } from "@/server/session-workspaces";
@@ -15,6 +15,7 @@ import { userMessageStreamEvent } from "@/server/chat-user-message";
 import { toolResultText, toolStepLabel, sanitizeSubagentDetails } from "@/server/session-projection";
 import { AttachmentValidationError, storeImageAttachments } from "@/server/attachments";
 import { SSE_HEADERS, sseEvent } from "@/server/sse";
+import { createLoopDetector } from "@/server/loop-detector";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -236,7 +237,26 @@ export async function POST(request: NextRequest) {
       let finished = false;
       let unsubscribeSession: () => void = () => {};
       const runSubscription: { current?: () => void } = {};
-      const heartbeatRef: { current?: ReturnType<typeof setInterval> } = {}; 
+      const heartbeatRef: { current?: ReturnType<typeof setInterval> } = {};
+      // 重复输出熔断：检测到循环时通过 steer 提醒模型自行纠正（不中止任务），每轮最多 2 次。
+      const loopDetector = createLoopDetector();
+      let loopReminders = 0;
+      const checkRepeatedOutput = (kind: "text" | "thinking", delta: string) => {
+        if (process.env.PI_WEB_LOOP_DETECTION === "0") return;
+        const signal = loopDetector.push(kind, delta);
+        if (!signal || loopReminders >= 2) return;
+        loopReminders += 1;
+        loopDetector.reset();
+        const runningSession = activeChatSession(sessionId);
+        if (!runningSession?.steer) return;
+        try {
+          void Promise.resolve(runningSession.steer(
+            `[系统提醒] 检测到你正在重复输出相同内容（${signal.reason}）。请立即停止重复：如果任务已经完成，直接给出最终结论；如果还没完成，换一个思路继续，不要重复前面的内容。`,
+          )).catch(() => undefined);
+        } catch {
+          // steer 失败不影响正常流式输出
+        }
+      }; 
       const emit = (event: ChatStreamEvent) => {
         if (subscriberDetached) return;
         try {
@@ -327,6 +347,7 @@ export async function POST(request: NextRequest) {
         if (event.type === "message_start") {
           streamedAssistantText = "";
           streamedThinkingText = "";
+          loopDetector.reset();
           const userMessage = userMessageStreamEvent(event.message);
           if (userMessage) publishActiveChatRunEvent(sessionId, userMessage);
         }
@@ -335,8 +356,10 @@ export async function POST(request: NextRequest) {
           if (message.role !== "assistant") return;
           const thinking = assistantThinkingText(message.content);
           if (thinking.length > streamedThinkingText.length) {
-            publishActiveChatRunEvent(sessionId, { type: "thinking_delta", delta: thinking.slice(streamedThinkingText.length) });
+            const delta = thinking.slice(streamedThinkingText.length);
+            publishActiveChatRunEvent(sessionId, { type: "thinking_delta", delta });
             streamedThinkingText = thinking;
+            checkRepeatedOutput("thinking", delta);
           }
           // 工具调用轮不产出可见文本。
           if (Array.isArray(message.content) && message.content.some((part) => (part as { type?: string }).type === "tool_call")) {
@@ -345,8 +368,10 @@ export async function POST(request: NextRequest) {
           }
           const text = assistantVisibleText(message.content);
           if (text.length > streamedAssistantText.length) {
-            publishActiveChatRunEvent(sessionId, { type: "text_delta", delta: text.slice(streamedAssistantText.length) });
+            const delta = text.slice(streamedAssistantText.length);
+            publishActiveChatRunEvent(sessionId, { type: "text_delta", delta });
             streamedAssistantText = text;
+            checkRepeatedOutput("text", delta);
           }
         }
       });
