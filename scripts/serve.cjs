@@ -46,9 +46,10 @@ function readConfig(configPath = CONFIG_PATH) {
       port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null,
       workspace: typeof raw?.workspace === "string" && raw.workspace.trim().length > 0 ? raw.workspace.trim() : null,
       projectWorkspacesRoot: typeof raw?.projectWorkspacesRoot === "string" && raw.projectWorkspacesRoot.trim().length > 0 ? raw.projectWorkspacesRoot.trim() : null,
+      frqWakeToken: typeof raw?.frqWakeToken === "string" && raw.frqWakeToken.length > 0 ? raw.frqWakeToken : null,
     };
   } catch {
-    return { port: null, workspace: null, projectWorkspacesRoot: null };
+    return { port: null, workspace: null, projectWorkspacesRoot: null, frqWakeToken: null };
   }
 }
 
@@ -66,8 +67,38 @@ function createServerEnvironment(config, parentEnv = process.env) {
     PI_WEB_WORKSPACE: workspace,
     PI_WEB_PROJECT_WORKSPACES_DIR: projectWorkspacesRoot,
     PI_FRQ_WAKE_URL: `http://127.0.0.1:${port}/api/frq/wake`,
-    PI_FRQ_WAKE_TOKEN: parentEnv.PI_FRQ_WAKE_TOKEN || require("node:crypto").randomBytes(32).toString("hex"),
+    PI_FRQ_WAKE_TOKEN: parentEnv.PI_FRQ_WAKE_TOKEN || config.frqWakeToken || "",
   };
+}
+
+/**
+ * 读取或生成后台任务回调（wake）通道令牌，并持久化到 service.json。
+ * 持久化的目的是让 TUI 会话、外部脚本也能拿到同一令牌（此前只存在于 Web 服务进程环境变量里）。
+ */
+function ensureFrqWakeToken(configPath = CONFIG_PATH) {
+  let raw = {};
+  let source = "";
+  try {
+    source = fs.readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(source);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) raw = parsed;
+  } catch {
+    // A missing or malformed configuration is replaced with a minimal valid object.
+  }
+  if (typeof raw.frqWakeToken === "string" && raw.frqWakeToken.length > 0) return raw.frqWakeToken;
+
+  const frqWakeToken = randomBytes(32).toString("hex");
+  const indent = /^([ \t]+)"/m.exec(source)?.[1] ?? "  ";
+  const ending = source.endsWith("\r\n") ? "\r\n" : "\n";
+  const temporary = `${configPath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify({ ...raw, frqWakeToken }, null, indent)}${ending}`, { encoding: "utf8", flag: "wx" });
+    fs.renameSync(temporary, configPath);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+  return frqWakeToken;
 }
 
 function main() {
@@ -78,7 +109,8 @@ function main() {
   }
 
   ensureAccessKey();
-  const config = readConfig();
+  const frqWakeToken = ensureFrqWakeToken();
+  const config = { ...readConfig(), frqWakeToken };
   const environment = createServerEnvironment(config);
   const port = Number(environment.PORT);
   const nextBin = require.resolve("next/dist/bin/next", { paths: [__dirname, process.cwd()] });
