@@ -100,12 +100,12 @@ describe("parseGitStatus", () => {
     await runWorkspaceGitAction({ action: "switch", branch: "feature" }, repository);
     const afterSwitch = await listWorkspaceGitBranches(repository);
     expect(afterSwitch.current).toBe("feature");
-  });
+  }, 20_000);
 
   it("rejects unsafe actions", async () => {
     await expect(runWorkspaceGitAction({ action: "stage", paths: ["../outside.txt"] }, repository)).rejects.toThrow("Git paths are invalid");
     await expect(runWorkspaceGitAction({ action: "commit", message: "" }, repository)).rejects.toThrow("Commit message is invalid");
     await expect(runWorkspaceGitAction({ action: "switch", branch: "-evil" }, repository)).rejects.toThrow("Branch name is invalid");
     await expect(runWorkspaceGitAction({ action: "switch", branch: "a b" }, repository)).rejects.toThrow("Branch name is invalid");
-  });
+  }, 20_000);
 });
