@@ -494,8 +494,8 @@ select { appearance: auto; background: var(--bg-input); border: 1px solid var(--
 .pending-queue li { align-items: flex-start; display: grid; gap: 9px; grid-template-columns: 20px minmax(0, 1fr); }
 .pending-queue-order { color: var(--text-faint); font-size: 12px; line-height: 1.65; text-align: center; }
 .pending-queue-state { color: var(--accent-strong); display: block; font-size: 11px; margin: 0 0 2px; }
-.pending-queue .markdown { color: var(--text-secondary); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
-.pending-queue .markdown > :last-child { margin-bottom: 0; }
+.pending-queue li > div { min-width: 0; }
+.pending-queue-text { color: var(--text-secondary); display: block; font-size: 13px; line-height: 1.55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .retry-status { color: var(--warning); font-size: 12px; line-height: 1.7; margin: 0 0 16px; }
 .chat-error { border-left: 2px solid var(--danger); color: var(--danger); margin: 14px 0 0; padding: 8px 11px; }
 

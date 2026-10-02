@@ -84,6 +84,17 @@ function modelLabel(model: { provider: string; id: string } | undefined, models:
   return models.find((candidate) => candidate.provider === model.provider && candidate.id === model.id)?.name ?? model.id;
 }
 
+/**
+ * 排队消息预览：压成单行纯文本（图片转 [图片] 标记）。
+ * 队列里可能有子代理唤醒等长文本（含多行 markdown），多行/逐字换行显示会难以阅读。
+ */
+export function pendingQueuePreview(content: string) {
+  return content
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "[图片]")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function imagesBeforeText(content: string) {
   const imageLines: string[] = [];
   const textLines: string[] = [];
@@ -316,7 +327,15 @@ export const ConversationView = memo(function ConversationView({ conversation, p
               <section className="pending-queue" aria-label="待处理消息" role="status">
                 <header><span>待处理消息</span><span>{pendingQueue.length}</span></header>
                 <ol>
-                  {pendingQueue.map((item, index) => <li key={item.id}><span className="pending-queue-order">{index + 1}</span><div><span className="pending-queue-state">等待处理</span><ChatMarkdown content={imagesBeforeText(item.content)} /></div></li>)}
+                  {pendingQueue.map((item, index) => (
+                    <li key={item.id}>
+                      <span className="pending-queue-order">{index + 1}</span>
+                      <div className="pending-queue-body">
+                        <span className="pending-queue-state">等待处理</span>
+                        <span className="pending-queue-text" title={item.content}>{pendingQueuePreview(item.content)}</span>
+                      </div>
+                    </li>
+                  ))}
                 </ol>
               </section>
             ) : null}
