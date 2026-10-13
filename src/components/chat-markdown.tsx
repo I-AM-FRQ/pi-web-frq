@@ -4,6 +4,32 @@ import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyTextToClipboard } from "@/client/clipboard";
+import { ImageLightbox } from "@/components/image-lightbox";
+import { TextFileModal } from "@/components/text-file-modal";
+
+/** 文本类扩展名：点击后弹模态框用 markdown 渲染，而不是走下载/新窗口。 */
+const TEXT_EXTENSIONS = new Set([
+  "md", "markdown", "txt", "log", "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "ini", "env",
+  "sh", "bash", "zsh", "ps1", "bat", "cmd", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "vue", "svelte",
+  "html", "htm", "xml", "css", "scss", "less", "sql", "go", "rs", "java", "kt", "swift", "c", "h", "cpp", "hpp", "cs", "php", "rb", "lua", "r", "dart", "gradle", "dockerfile", "gitignore",
+]);
+
+function localFilePathFromHref(href: string): string | null {
+  const prefix = "/api/local-file?path=";
+  if (!href.startsWith(prefix)) return null;
+  try {
+    return decodeURIComponent(href.slice(prefix.length));
+  } catch {
+    return null;
+  }
+}
+
+function isTextPath(path: string): boolean {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  const extension = name.includes(".") ? name.split(".").pop()?.toLowerCase() ?? "" : "";
+  if (TEXT_EXTENSIONS.has(extension)) return true;
+  return /^(dockerfile|makefile|readme|license)$/i.test(name);
+}
 
 /** 块级代码：右上角复制按钮。 */
 function CodeBlock({ children }: { children?: ReactNode }) {
@@ -80,31 +106,47 @@ export function linkifyLocalPaths(content: string): string {
 
 export const ChatMarkdown = memo(function ChatMarkdown({ content }: { content: string }) {
   const prepared = useMemo(() => linkifyLocalPaths(content), [content]);
+  // 点击图片 → 缩放查看；点击文本类文件链接 → 弹模态框用 markdown 渲染
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [textFilePath, setTextFilePath] = useState<string | null>(null);
+
   return (
     <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           pre: CodeBlock,
-          // 所有链接在新窗口打开（网页跳转、本地文件、图片原始文件都适用）
-          a: ({ href, children }) => (
-            <a className="markdown-link" href={typeof href === "string" ? href : undefined} target="_blank" rel="noreferrer noopener">
-              {children}
-            </a>
-          ),
-          // 图片：限宽显示，点击在新窗口查看原图
+          // 链接：本地文本文件拦截为模态框查看，其余（网页/下载）新窗口打开
+          a: ({ href, children }) => {
+            const path = typeof href === "string" ? localFilePathFromHref(href) : null;
+            if (path && isTextPath(path)) {
+              return (
+                <button type="button" className="markdown-link markdown-link-file" onClick={() => setTextFilePath(path)} title="点击查看内容">
+                  {children}
+                </button>
+              );
+            }
+            return (
+              <a className="markdown-link" href={typeof href === "string" ? href : undefined} target="_blank" rel="noreferrer noopener">
+                {children}
+              </a>
+            );
+          },
+          // 图片：限宽显示，点击打开缩放查看器
           img: ({ src, alt }) => {
             const source = typeof src === "string" ? src : "";
             return (
-              <a className="markdown-image-link" href={source} target="_blank" rel="noreferrer noopener">
+              <button type="button" className="markdown-image-button" onClick={() => setLightboxSrc(source)} title="点击查看大图">
                 <img className="markdown-image" src={source} alt={alt ?? ""} loading="lazy" />
-              </a>
+              </button>
             );
           },
         }}
       >
         {prepared}
       </ReactMarkdown>
+      {lightboxSrc ? <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} /> : null}
+      {textFilePath ? <TextFileModal path={textFilePath} onClose={() => setTextFilePath(null)} /> : null}
     </div>
   );
 });
