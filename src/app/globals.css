@@ -1576,3 +1576,10 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .room-badge { align-items: center; background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 4px; color: var(--accent); display: inline-flex; flex: 0 0 auto; font-size: 9px; height: 15px; justify-content: center; padding: 0 3px; }
 .room-count { color: var(--text-faint); flex: 0 0 auto; font-size: 10px; }
 .project-session:has(.room-badge) .project-session-select { color: var(--text); }
+
+/* 群聊实时输出（打字机效果）：末尾闪烁光标 */
+.chat-bubble-live { position: relative; }
+.chat-caret { animation: chat-caret-blink 1s step-end infinite; background: var(--accent); border-radius: 1px; display: inline-block; height: 14px; margin-left: 2px; vertical-align: -2px; width: 2px; }
+@keyframes chat-caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+/* 单角色视图直接复用默认会话渲染，这里只补容器滚动 */
+.room-messages-focus { display: block; padding: 0; }

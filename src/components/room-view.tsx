@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { ModelDescriptor, RoomMessage, RoomParticipant } from "@/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ModelDescriptor, RoomMessage, RoomParticipant, SessionDetail } from "@/contracts";
 import type { RoomDetail } from "@/client/use-rooms";
+import { useChatStream } from "@/client/use-chat-stream";
+import { useRoomStreams } from "@/client/use-room-streams";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import { ConversationView } from "@/components/conversation-view";
 
 type RoomViewProps = {
   detail: RoomDetail;
@@ -31,10 +34,15 @@ function avatarText(role: string): string {
   return trimmed ? trimmed.slice(0, 1).toUpperCase() : "?";
 }
 
+const EMPTY_QUEUE: never[] = [];
+
 /**
- * 聊天室视图（微信群聊风格）：
- * - 群聊：用户在右侧气泡，各角色在左侧气泡（头像 + 角色名 + 时间）；角色正在响应时显示“正在输入…”气泡。
- * - 单角色（点角色名进入）：该角色在群聊中的发言 + 与它的私聊，可单独对话、随时更换它的模型。
+ * 聊天室视图（微信群聊风格）。
+ *
+ * 群聊本质是多个默认会话拼起来：
+ * - 每个角色就是一个普通 pi 会话；
+ * - 单角色视图直接复用默认会话的渲染（ConversationView + use-chat-stream），行为与默认会话一致；
+ * - 群聊视图在此之上做聚合：正式消息用左右气泡展示，正在响应的角色用实时流呈现打字机效果。
  */
 export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAddParticipant, onRemoveParticipant, onRenameRoom }: RoomViewProps) {
   const [focusParticipantId, setFocusParticipantId] = useState<string | null>(null);
@@ -46,20 +54,60 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
   const [newRole, setNewRole] = useState("");
   const [newRoleModel, setNewRoleModel] = useState("");
   const [showRoleForm, setShowRoleForm] = useState(false);
+  const [participantDetail, setParticipantDetail] = useState<SessionDetail | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const resumedSessionRef = useRef<string | null>(null);
 
   const { room, messages } = detail;
   const focusParticipant = focusParticipantId ? room.participants.find((participant) => participant.id === focusParticipantId) ?? null : null;
+  const runningParticipantIds = useMemo(() => detail.runningParticipantIds ?? [], [detail.runningParticipantIds]);
 
-  const runningParticipants = useMemo(() => {
-    const ids = detail.runningParticipantIds ?? [];
-    return room.participants.filter((participant) => ids.includes(participant.id));
-  }, [detail.runningParticipantIds, room.participants]);
+  // 群聊：订阅各运行中角色的实时输出（打字机效果）
+  const roomStreams = useRoomStreams(room.participants, runningParticipantIds);
+  // 单角色视图：直接复用默认会话的实时流机制
+  const participantChat = useChatStream();
+  const participantSessionId = focusParticipant?.sessionId ?? null;
+  const participantRun = participantSessionId ? participantChat.runFor(participantSessionId) : undefined;
+
+  const runningParticipants = useMemo(
+    () => room.participants.filter((participant) => runningParticipantIds.includes(participant.id)),
+    [room.participants, runningParticipantIds],
+  );
+
+  const loadParticipantDetail = useCallback(async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" });
+      if (!response.ok) return;
+      setParticipantDetail((await response.json()) as SessionDetail);
+    } catch {
+      // 详情拉取失败时保留上一次内容
+    }
+  }, []);
+
+  // 切到某个角色：拉取其会话详情（与默认会话相同的数据源），并在运行中时接入实时流
+  useEffect(() => {
+    if (!participantSessionId) {
+      setParticipantDetail(null);
+      return;
+    }
+    if (resumedSessionRef.current === participantSessionId) return;
+    resumedSessionRef.current = participantSessionId;
+    setParticipantDetail(null);
+    void loadParticipantDetail(participantSessionId);
+    participantChat.resume(participantSessionId);
+  }, [participantSessionId, loadParticipantDetail, participantChat]);
+
+  // 角色回复结束：刷新会话详情，让正式消息取代实时流内容
+  const participantStreaming = participantRun?.isStreaming ?? false;
+  useEffect(() => {
+    if (participantStreaming || !participantSessionId) return;
+    void loadParticipantDetail(participantSessionId);
+  }, [participantStreaming, participantSessionId, loadParticipantDetail]);
 
   const visibleMessages = useMemo(() => {
     if (focusParticipant) {
-      // 单角色视图：该角色在群聊中的发言 + 与它的私聊（其他角色看不到的对话）
+      // 单角色视图：该角色在群聊中的发言 + 与它的私聊
       return messages.filter((message) => {
         if (message.visibility === "private") return message.targetParticipantId === focusParticipant.id;
         return message.sender.type === "user" || (message.sender.type === "participant" && message.sender.participantId === focusParticipant.id);
@@ -71,7 +119,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
   useEffect(() => {
     const container = scrollRef.current;
     if (container) container.scrollTop = container.scrollHeight;
-  }, [visibleMessages.length, runningParticipants.length, focusParticipantId]);
+  }, [visibleMessages.length, runningParticipants.length, focusParticipantId, participantRun?.timeline.length]);
 
   useEffect(() => {
     setNameDraft(room.name);
@@ -86,7 +134,6 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
     if (!newRoleModel && models.length > 0) setNewRoleModel(`${models[0].provider}:${models[0].id}`);
   }, [models, newRoleModel]);
 
-  // 输入框自动高度（与默认对话框一致的手感）。
   useEffect(() => {
     const textarea = inputRef.current;
     if (!textarea) return;
@@ -144,17 +191,40 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
     );
   };
 
-  const renderTyping = (participant: RoomParticipant) => (
-    <div key={`typing-${participant.id}`} className="chat-row chat-row-in">
-      <span className="chat-avatar" aria-hidden="true">{avatarText(participant.role)}</span>
-      <div className="chat-column">
-        <div className="chat-meta"><span className="chat-author">{participant.role}</span><span className="chat-typing-label">正在输入…</span></div>
-        <div className="chat-bubble chat-bubble-typing" role="status" aria-label={`${participant.role} 正在输入`}>
-          <i /><i /><i />
+  /** 运行中的角色：有实时文本就逐字渲染（打字机），否则显示“正在输入…”。 */
+  const renderLive = (participant: RoomParticipant) => {
+    const stream = roomStreams[participant.id];
+    const text = stream?.text?.trim() ?? "";
+    return (
+      <div key={`live-${participant.id}`} className="chat-row chat-row-in">
+        <button
+          type="button"
+          className="chat-avatar"
+          onClick={() => setFocusParticipantId(participant.id)}
+          title={`与「${participant.role}」单独对话`}
+          aria-label={`与 ${participant.role} 单独对话`}
+        >
+          {avatarText(participant.role)}
+        </button>
+        <div className="chat-column">
+          <div className="chat-meta">
+            <button type="button" className="chat-author chat-author-button" onClick={() => setFocusParticipantId(participant.id)}>{participant.role}</button>
+            <span className="chat-typing-label">正在输入…</span>
+          </div>
+          {text ? (
+            <div className="chat-bubble chat-bubble-live">
+              <ChatMarkdown content={text} />
+              <span className="chat-caret" aria-hidden="true" />
+            </div>
+          ) : (
+            <div className="chat-bubble chat-bubble-typing" role="status" aria-label={`${participant.role} 正在输入`}>
+              <i /><i /><i />
+            </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="room-view">
@@ -243,16 +313,39 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
         ) : null}
       </header>
 
-      <div className="room-messages" ref={scrollRef}>
-        {visibleMessages.length === 0 && runningParticipants.length === 0 ? (
-          <p className="room-empty">
-            {focusParticipant ? `还没有与「${focusParticipant.role}」的对话。这里的消息只有它能看到。` : "房间还没有消息。在下面发言，所有角色都会响应。"}
-          </p>
-        ) : visibleMessages.map(renderMessage)}
-        {runningParticipants
-          .filter((participant) => !focusParticipant || participant.id === focusParticipant.id)
-          .map(renderTyping)}
-      </div>
+      {focusParticipant ? (
+        // 单角色视图：照搬默认会话的渲染（思考、工具、打字机、Markdown 完全一致）
+        <div className="room-messages room-messages-focus" ref={scrollRef}>
+          {participantSessionId ? (
+            <ConversationView
+              conversation={participantDetail?.conversation ?? []}
+              pendingPrompt={participantRun?.pendingPrompt ?? ""}
+              timeline={participantRun?.timeline ?? []}
+              pendingQueue={EMPTY_QUEUE}
+              retry={participantRun?.retry ?? null}
+              error={participantRun?.error ?? ""}
+              isStreaming={participantStreaming}
+              runId={participantRun?.runId ?? ""}
+              isLoading={!participantDetail}
+              truncated={participantDetail?.truncated.conversation ?? false}
+              models={models}
+              liveModelName={modelLabel(models, focusParticipant.modelKey)}
+              runStartedAt={participantRun?.startedAt}
+              runFinishedAt={participantRun?.finishedAt}
+              runReplay={participantRun?.replay}
+            />
+          ) : (
+            <p className="room-empty">这个角色还没有开始过对话。在下面发一条消息就会为它创建独立会话。</p>
+          )}
+        </div>
+      ) : (
+        <div className="room-messages" ref={scrollRef}>
+          {visibleMessages.length === 0 && runningParticipants.length === 0 ? (
+            <p className="room-empty">房间还没有消息。在下面发言，所有角色都会响应。</p>
+          ) : visibleMessages.map(renderMessage)}
+          {runningParticipants.map(renderLive)}
+        </div>
+      )}
 
       {error ? <p className="chat-error" role="alert">{error}</p> : null}
 
