@@ -9,7 +9,8 @@ const NO_STORE = { "Cache-Control": "no-store" };
 export async function GET(request: NextRequest) {
   const projectIdParam = request.nextUrl.searchParams.get("projectId");
   try {
-    const rooms = await listRooms(projectIdParam === null ? undefined : projectIdParam);
+    // projectId= 空串表示“无项目”（null），null（未传参）表示不过滤
+    const rooms = await listRooms(projectIdParam === null ? undefined : projectIdParam === "" ? null : projectIdParam);
     return NextResponse.json({ rooms }, { headers: NO_STORE });
   } catch (error) {
     console.error("Unable to list rooms", error);

@@ -207,3 +207,36 @@ export type ChatStreamEvent =
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
   | { type: "done"; sessionId: string }
   | { type: "error"; code: string; message: string };
+
+// ---- 聊天室（多模型协作） ----
+
+export type RoomParticipant = {
+  id: string;
+  /** 角色名（角色与模型解耦，可随时更换模型） */
+  role: string;
+  /** 当前使用的模型 "provider:id" */
+  modelKey: string;
+  /** 该角色独立持久会话 id；空字符串表示尚未开始（首次响应时创建） */
+  sessionId: string;
+  createdAt: string;
+};
+
+export type Room = {
+  id: string;
+  projectId: string | null;
+  name: string;
+  participants: RoomParticipant[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RoomMessage = {
+  id: string;
+  roomId: string;
+  sender: { type: "user" } | { type: "participant"; participantId: string; role: string };
+  content: string;
+  /** room：房间公开（群聊）；private：仅目标角色可见（私聊） */
+  visibility: "room" | "private";
+  targetParticipantId?: string;
+  createdAt: string;
+};

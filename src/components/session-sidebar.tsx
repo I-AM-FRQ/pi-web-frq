@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Project, SessionSummary } from "@/contracts";
+import type { Room } from "@/contracts";
 
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
@@ -23,6 +24,11 @@ type SessionSidebarProps = {
   onDeleteProject: (projectId: string) => Promise<boolean>;
   onRenameSession: (sessionId: string, name: string) => Promise<boolean>;
   onDeleteSession: (sessionId: string) => Promise<boolean>;
+  rooms?: Room[];
+  selectedRoomId?: string | null;
+  onNewRoom?: (projectId: string | null) => void;
+  onSelectRoom?: (roomId: string) => void;
+  onDeleteRoom?: (roomId: string) => void;
 };
 
 function titleFor(session: SessionSummary) {
@@ -80,7 +86,7 @@ function SessionRow({ session, selected, running, completed, onSelect, onRename,
   );
 }
 
-function ProjectGroup({ project, sessions, selectedSessionId, selectedProjectId, seenSessionIds, completedSessionIds = EMPTY_SESSION_IDS, runningSessionIds = EMPTY_SESSION_IDS, onNewSession, onSelectProject, onSelectSession, onRename, onDelete, onRenameSession, onDeleteSession }: {
+function ProjectGroup({ project, sessions, rooms = [], selectedRoomId = null, selectedSessionId, selectedProjectId, seenSessionIds, completedSessionIds = EMPTY_SESSION_IDS, runningSessionIds = EMPTY_SESSION_IDS, onNewSession, onNewRoom, onSelectRoom, onDeleteRoom, onSelectProject, onSelectSession, onRename, onDelete, onRenameSession, onDeleteSession }: {
   project: Project;
   sessions: SessionSummary[];
   selectedSessionId: string | null;
@@ -95,6 +101,11 @@ function ProjectGroup({ project, sessions, selectedSessionId, selectedProjectId,
   onDelete: (projectId: string) => Promise<boolean>;
   onRenameSession: (sessionId: string, name: string) => Promise<boolean>;
   onDeleteSession: (sessionId: string) => Promise<boolean>;
+  rooms?: Room[];
+  selectedRoomId?: string | null;
+  onNewRoom?: (projectId: string | null) => void;
+  onSelectRoom?: (roomId: string) => void;
+  onDeleteRoom?: (roomId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -109,9 +120,9 @@ function ProjectGroup({ project, sessions, selectedSessionId, selectedProjectId,
         <button type="button" className="project-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-label={`${expanded ? "折叠" : "展开"}项目 ${project.name}`}><Chevron open={expanded} /></button>
         {editing ? <form className="project-name-form" onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void rename(); }}><input value={draftName} onChange={(event) => setDraftName(event.target.value)} autoFocus maxLength={80} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setDraftName(project.name); setEditing(false); } }} onBlur={(event) => { if (!(event.relatedTarget instanceof HTMLElement && event.currentTarget.form?.contains(event.relatedTarget))) setEditing(false); }} aria-label="项目名称" /><button className="confirm-button" type="submit" disabled={!draftName.trim()} aria-label="保存项目名称" title="保存"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg></button></form> : <button type="button" className="project-name" title={project.name}>{project.name}</button>}
         {unreadCompleted > 0 ? <span className="project-count" title={`${unreadCompleted} 个会话有新的完成结果`}>{unreadCompleted}</span> : null}
-        <div className="project-actions"><button type="button" onClick={(event) => { event.stopPropagation(); onNewSession(project.id); }} aria-label={`在项目 ${project.name} 中新建会话`} title="新建会话">＋</button><button type="button" onClick={(event) => { event.stopPropagation(); setDraftName(project.name); setEditing(true); }} disabled={hasRunning} aria-label={`重命名项目 ${project.name}`} title="重命名">✎</button><button type="button" onClick={(event) => { event.stopPropagation(); if (window.confirm(`删除项目“${project.name}”？请先删除项目内的会话。`)) void onDelete(project.id); }} disabled={hasRunning} aria-label={`删除项目 ${project.name}`} title="删除">×</button></div>
+        <div className="project-actions"><button type="button" onClick={(event) => { event.stopPropagation(); onNewSession(project.id); }} aria-label={`在项目 ${project.name} 中新建会话`} title="新建会话">＋</button><button type="button" onClick={(event) => { event.stopPropagation(); onNewRoom?.(project.id); }} aria-label={`在项目 ${project.name} 中新建聊天室`} title="新建聊天室（多模型协作）">🎭</button><button type="button" onClick={(event) => { event.stopPropagation(); setDraftName(project.name); setEditing(true); }} disabled={hasRunning} aria-label={`重命名项目 ${project.name}`} title="重命名">✎</button><button type="button" onClick={(event) => { event.stopPropagation(); if (window.confirm(`删除项目“${project.name}”？请先删除项目内的会话。`)) void onDelete(project.id); }} disabled={hasRunning} aria-label={`删除项目 ${project.name}`} title="删除">×</button></div>
       </div>
-      {expanded ? <ul className="project-sessions">{sessions.map((session) => <SessionRow key={session.id} session={session} selected={selectedSessionId === session.id} running={runningSessionIds.has(session.id)} completed={completedSessionIds.has(session.id)} onSelect={() => onSelectSession(session.id)} onRename={onRenameSession} onDelete={onDeleteSession} />)}{sessions.length === 0 ? <li className="project-empty">暂无会话</li> : null}</ul> : null}
+      {expanded ? <ul className="project-sessions">{sessions.map((session) => <SessionRow key={session.id} session={session} selected={selectedSessionId === session.id} running={runningSessionIds.has(session.id)} completed={completedSessionIds.has(session.id)} onSelect={() => onSelectSession(session.id)} onRename={onRenameSession} onDelete={onDeleteSession} />)}{sessions.length === 0 ? <li className="project-empty">暂无会话</li> : null}</ul> : null}{rooms.length > 0 ? <ul className="project-rooms">{rooms.map((room) => <li key={room.id} className={`room-row${selectedRoomId === room.id ? " selected" : ""}`}><button type="button" className="room-row-name" onClick={() => { onSelectProject(project.id); onSelectRoom?.(room.id); }} title={`聊天室 · ${room.participants.length} 个角色`}><span className="room-row-icon" aria-hidden="true">🎭</span>{room.name}</button><button type="button" className="room-row-delete" onClick={() => { if (window.confirm(`删除聊天室“${room.name}”？`)) onDeleteRoom?.(room.id); }} aria-label={`删除聊天室 ${room.name}`} title="删除聊天室">×</button></li>)}</ul> : null}
     </section>
   );
 }
@@ -152,8 +163,8 @@ export function SessionSidebar(props: SessionSidebarProps) {
     {showMenu ? <form className="new-project-form" onSubmit={(event) => { event.preventDefault(); void createProject(); }}><input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="项目名称" maxLength={80} autoFocus /><input value={newProjectWorkspace} onChange={(event) => setNewProjectWorkspace(event.target.value)} placeholder="工作区路径（留空默认：文档/Pi/项目名）" /><button type="submit" disabled={!newProjectName.trim()}>创建</button></form> : null}</div>
     <nav className="project-list" aria-label="项目与会话列表">
       {props.isLoading ? <p className="empty-sessions">加载中…</p> : null}
-      {props.projects.map((project) => <ProjectGroup key={project.id} project={project} sessions={sessionsFor(project.id)} selectedSessionId={props.selectedSessionId} selectedProjectId={props.selectedProjectId} seenSessionIds={props.seenSessionIds} completedSessionIds={completedSessionIds} runningSessionIds={runningSessionIds} onNewSession={props.onNewSession} onSelectProject={props.onSelectProject} onSelectSession={(sessionId) => { props.onSelectProject(project.id); props.onSelectSession(sessionId); }} onRename={props.onRenameProject} onDelete={props.onDeleteProject} onRenameSession={props.onRenameSession} onDeleteSession={props.onDeleteSession} />)}
-      <section className={`project-group ungrouped ${props.selectedProjectId === null ? "selected" : ""}`}><div className="project-row" role="button" tabIndex={0} onClick={() => props.onNewSession(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); props.onNewSession(null); } }} aria-label="在无项目中新建会话"><span className="project-toggle-spacer" aria-hidden="true" /><span className="project-name">无项目</span>{ungroupedUnread > 0 ? <span className="project-count" title={`${ungroupedUnread} 个会话有新的完成结果`}>{ungroupedUnread}</span> : null}</div><ul className="project-sessions">{ungrouped.map((session) => <SessionRow key={session.id} session={session} selected={props.selectedSessionId === session.id} running={runningSessionIds.has(session.id)} completed={completedSessionIds.has(session.id)} onSelect={() => { props.onSelectProject(null); props.onSelectSession(session.id); }} onRename={props.onRenameSession} onDelete={props.onDeleteSession} />)}</ul></section>
+      {props.projects.map((project) => <ProjectGroup key={project.id} project={project} sessions={sessionsFor(project.id)} selectedSessionId={props.selectedSessionId} selectedProjectId={props.selectedProjectId} seenSessionIds={props.seenSessionIds} completedSessionIds={completedSessionIds} runningSessionIds={runningSessionIds} onNewSession={props.onNewSession} onNewRoom={props.onNewRoom} onSelectRoom={props.onSelectRoom} onDeleteRoom={props.onDeleteRoom} rooms={props.rooms?.filter((room) => room.projectId === project.id)} selectedRoomId={props.selectedRoomId} onSelectProject={props.onSelectProject} onSelectSession={(sessionId) => { props.onSelectProject(project.id); props.onSelectSession(sessionId); }} onRename={props.onRenameProject} onDelete={props.onDeleteProject} onRenameSession={props.onRenameSession} onDeleteSession={props.onDeleteSession} />)}
+      <section className={`project-group ungrouped ${props.selectedProjectId === null ? "selected" : ""}`}><div className="project-row" role="button" tabIndex={0} onClick={() => props.onNewSession(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); props.onNewSession(null); } }} aria-label="在无项目中新建会话"><span className="project-toggle-spacer" aria-hidden="true" /><span className="project-name">无项目</span><span className="project-actions"><button type="button" onClick={(event) => { event.stopPropagation(); props.onNewRoom?.(null); }} aria-label="新建聊天室" title="新建聊天室（多模型协作）">🎭</button></span>{ungroupedUnread > 0 ? <span className="project-count" title={`${ungroupedUnread} 个会话有新的完成结果`}>{ungroupedUnread}</span> : null}</div><ul className="project-sessions">{ungrouped.map((session) => <SessionRow key={session.id} session={session} selected={props.selectedSessionId === session.id} running={runningSessionIds.has(session.id)} completed={completedSessionIds.has(session.id)} onSelect={() => { props.onSelectProject(null); props.onSelectSession(session.id); }} onRename={props.onRenameSession} onDelete={props.onDeleteSession} />)}</ul>{props.rooms?.some((room) => room.projectId === null) ? <ul className="project-rooms">{props.rooms.filter((room) => room.projectId === null).map((room) => <li key={room.id} className={`room-row${props.selectedRoomId === room.id ? " selected" : ""}`}><button type="button" className="room-row-name" onClick={() => { props.onSelectProject(null); props.onSelectRoom?.(room.id); }} title={`聊天室 · ${room.participants.length} 个角色`}><span className="room-row-icon" aria-hidden="true">🎭</span>{room.name}</button><button type="button" className="room-row-delete" onClick={() => { if (window.confirm(`删除聊天室“${room.name}”？`)) props.onDeleteRoom?.(room.id); }} aria-label={`删除聊天室 ${room.name}`} title="删除聊天室">×</button></li>)}</ul> : null}</section>
     </nav>
   </section>;
 }

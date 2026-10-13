@@ -12,6 +12,8 @@ import { useWorkspaceTree } from "@/client/use-workspace-tree";
 import { useWorkspaceGit } from "@/client/use-workspace-git";
 import { ConversationView } from "@/components/conversation-view";
 import { SessionSidebar } from "@/components/session-sidebar";
+import { RoomView } from "@/components/room-view";
+import { useRooms } from "@/client/use-rooms";
 import { WorkbenchSidePanel } from "@/components/workbench-side-panel";
 import { ChatComposer } from "@/components/chat-composer";
 import { ChatHeader } from "@/components/chat-header";
@@ -105,6 +107,13 @@ export default function Home() {
   const commandNoticeTimerRef = useRef<number | null>(null);
   const chat = useChatStream();
   const sessions = useSessions();
+  const rooms = useRooms();
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  // 让回调引用始终指向最新实现（JSX 中的处理器闭包不受影响）
+  const createRoomRef = useRef(rooms.createRoom);
+  const selectRoomRef = useRef(rooms.selectRoom);
+  createRoomRef.current = rooms.createRoom;
+  selectRoomRef.current = rooms.selectRoom;
   const { settings } = useSettings();
   const { toasts, dismissToast } = useCompletionNotifier(chat.runs, settings);
   const settingsRef = useRef(settings);
@@ -168,6 +177,8 @@ export default function Home() {
     }
   }, []);
 
+  const refreshRooms = rooms.refreshRooms;
+  useEffect(() => { void refreshRooms(selectedProjectId); }, [refreshRooms, selectedProjectId]);
   const selectedSessionId = sessions.selectedSessionId;
   const { toasts: frqToasts, dismissToast: dismissFrqToast } = useFrqCompletionNotifier(selectedSessionId, settings.completionAlert);
   const refreshCurrentDetail = sessions.refreshCurrentDetail;
@@ -221,6 +232,30 @@ export default function Home() {
       },
     });
   }, [finalizeWakeRun, resumeChat, runFor]);
+
+  /** 新建聊天室：输入角色名，用当前默认模型初始化（模型之后可随时更换）。 */
+  const createRoomForProject = useCallback(async (projectId: string | null) => {
+    const input = window.prompt("输入角色名（用逗号分隔），例如：开发者,审查者", "开发者,审查者");
+    if (!input) return;
+    const roleNames = input.split(/[,，]/).map((value) => value.trim()).filter(Boolean).slice(0, 8);
+    if (roleNames.length === 0) return;
+    const defaultModel = models[0] ? `${models[0].provider}:${models[0].id}` : "";
+    if (!defaultModel) {
+      window.alert("还没有可用模型，请先在「模型」中配置。");
+      return;
+    }
+    try {
+      const room = await createRoomRef.current({
+        projectId,
+        name: roleNames.length > 1 ? `聊天室 · ${roleNames.join("/")}` : `聊天室 · ${roleNames[0]}`,
+        roles: roleNames.map((role) => ({ role, modelKey: defaultModel })),
+      });
+      setSelectedRoomId(room.id);
+      selectRoomRef.current(room.id);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "创建聊天室失败。");
+    }
+  }, [models]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -585,13 +620,18 @@ export default function Home() {
           isLoading={sessions.isLoading}
           runningSessionIds={chat.runningSessionIds}
           onNewSession={(projectId: string | null) => { setBranchFromEntryId(undefined); setBranchDetailReady(false); sessions.createSession(projectId); setMobileDrawer(null); }}
-          onSelectSession={(sessionId) => { void selectSession(sessionId); }}
+          onSelectSession={(sessionId) => { setSelectedRoomId(null); void selectSession(sessionId); }}
           onSelectProject={(projectId) => { sessions.selectProject(projectId); setMobileDrawer(null); }}
           onCreateProject={sessions.createProject}
           onRenameProject={sessions.renameProject}
           onDeleteProject={sessions.deleteProject}
           onRenameSession={sessions.renameSession}
           onDeleteSession={sessions.deleteSession}
+          rooms={rooms.rooms}
+          selectedRoomId={selectedRoomId}
+          onNewRoom={(projectId: string | null) => { void createRoomForProject(projectId); setMobileDrawer(null); }}
+          onSelectRoom={(roomId: string) => { setSelectedRoomId(roomId); rooms.selectRoom(roomId); setMobileDrawer(null); }}
+          onDeleteRoom={(roomId: string) => { void rooms.deleteRoom(roomId); if (selectedRoomId === roomId) setSelectedRoomId(null); }}
         />
         <section className="settings-section" aria-label="运行配置">
 
@@ -605,6 +645,20 @@ export default function Home() {
 
       <section className="chat-panel" aria-label="聊天">
         <SubagentWidget key={selectedSessionId ?? "no-session"} sessionId={selectedSessionId} />
+        {selectedRoomId && rooms.detail ? (
+          <RoomView
+            detail={rooms.detail}
+            models={models}
+            onSend={(content, targetParticipantId) => rooms.sendMessage(selectedRoomId, content, targetParticipantId)}
+            onChangeModel={(participantId, modelKey) => rooms.updateParticipant(selectedRoomId, participantId, { modelKey })}
+            onAddParticipant={(role, modelKey) => rooms.addParticipant(selectedRoomId, { role, modelKey })}
+            onRemoveParticipant={(participantId) => rooms.removeParticipant(selectedRoomId, participantId)}
+            onRenameRoom={(name) => rooms.renameRoom(selectedRoomId, name)}
+          />
+        ) : null}
+        {rooms.error ? <p className="page-error" role="alert">{rooms.error}</p> : null}
+        {selectedRoomId && rooms.detail ? null : (
+          <>
         <ChatHeader title={sessions.detail?.session.name || "对话"} usage={sessions.detail?.usage} context={displayedContext} tokenSpeed={activeRun?.tokenSpeed ?? 0} isStreaming={isStreaming} onOpenSessions={() => setMobileDrawer("sessions")} onOpenWorkspace={() => setMobileDrawer("workspace")} />
         {sessions.error ? <p className="page-error" role="alert">{sessions.error}</p> : null}
         {commandBusy ? <p className="command-notice busy" role="status">正在执行 /{commandBusy} …</p> : null}
@@ -632,6 +686,9 @@ export default function Home() {
         />
         {previewIsReadOnly ? <p className="branch-notice">正在只读查看历史节点。请选择“从此继续”后再发送消息。</p> : null}
         <ChatComposer key={`${selectedProjectId ?? "default"}:${sessions.selectedSessionId ?? "new"}:${branchFromEntryId ?? "active"}`} value={prompt} projectId={selectedProjectId} models={models} modelKey={effectiveModelKey} onModelChange={(nextModelKey) => { setUserTouchedModel(true); try { localStorage.setItem(LAST_MODEL_KEY, nextModelKey); } catch { /* 忽略持久化失败 */ } setModelKey(nextModelKey);  }} thinkingLevel={requestedThinkingLevel} thinkingLevels={selectedModel?.thinkingLevels ?? []} recommendedThinkingLevel={recommendedThinkingLevel} onThinkingLevelChange={(nextLevel) => setSessionThinkingLevels((current) => (current[thinkingKey] === nextLevel ? current : { ...current, [thinkingKey]: nextLevel }))} onOpenGlobalSettings={openGlobalSettings} onOpenSystemPrompt={() => setSystemPromptOpen(true)} disabled={previewIsReadOnly} isStreaming={isStreaming} onChange={setPrompt} onSubmit={submit} onCommand={runSlashCommand} onStop={() => { if (activeRun) chat.stop(activeRun.id); }} inputRef={composerRef} stopping={activeRun?.stopping} />
+
+          </>
+        )}
       </section>
 
       {systemPromptOpen ? <SystemPromptModal projectId={sessions.selectedProjectId} onClose={() => setSystemPromptOpen(false)} /> : null}
