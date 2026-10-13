@@ -74,6 +74,8 @@ export function buildRoomPrompt(input: {
 	}
 	lines.push("", "最新一条消息：", content, "");
 	lines.push(`请以角色「${participant.role}」的身份继续协作：给出你的判断与成果，不要复述上面的上下文。`);
+	// 群发时给一个“不参与”的出口，避免无关角色强行输出（回复 [SKIP] 不会写入房间）
+	lines.push("如果这条消息与你无关、不需要你回应，请只回复 [SKIP]。");
 	return lines.join("\n");
 }
 
@@ -208,7 +210,9 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 	void session.prompt(promptText).then(async () => {
 		publishActiveChatRunEvent(sessionId, { type: "done", sessionId });
 		const reply = streamed.assistantText.trim();
-		if (reply) {
+		// 角色主动表态“与我无关”时不写入房间，避免群发时的噪音
+		const isSkipReply = /^\[?\s*skip\s*\]?$/i.test(reply) || (reply.length <= 16 && /\[?\s*skip\s*\]?/i.test(reply));
+		if (reply && !isSkipReply) {
 			await appendRoomMessage({
 				roomId: room.id,
 				sender: { type: "participant", participantId: participant.id, role: participant.role },

@@ -143,6 +143,24 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
     textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 44), 180)}px`;
   }, [draft]);
 
+  /** 停止某个角色正在运行的模型（输入框「停止」或点运行中的停止按钮都会走到这里）。 */
+  const stopParticipant = async (participant: RoomParticipant) => {
+    if (!participant.sessionId) return;
+    setRoutingNotice(`正在停止「${participant.role}」…`);
+    try {
+      const response = await fetch("/api/chat/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: participant.sessionId }),
+      });
+      setRoutingNotice(response.ok ? `已停止「${participant.role}」` : `停止「${participant.role}」失败`);
+    } catch {
+      setRoutingNotice(`停止「${participant.role}」失败`);
+    }
+    if (routingTimerRef.current !== null) window.clearTimeout(routingTimerRef.current);
+    routingTimerRef.current = window.setTimeout(() => setRoutingNotice(""), 6_000);
+  };
+
   const submit = async () => {
     const content = draft.trim();
     if (!content || sending || disabled) return;
@@ -228,6 +246,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
           <div className="chat-meta">
             <button type="button" className="chat-author chat-author-button" onClick={() => setFocusParticipantId(participant.id)}>{participant.role}</button>
             <span className="chat-typing-label">正在输入…</span>
+            <button type="button" className="chat-stop" onClick={() => void stopParticipant(participant)} title="停止该角色运行">停止</button>
           </div>
           {text ? (
             <div className="chat-bubble chat-bubble-live">
@@ -326,6 +345,9 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
                 {models.map((model) => <option key={`${model.provider}:${model.id}`} value={`${model.provider}:${model.id}`}>{model.name}</option>)}
               </select>
             </label>
+            {runningParticipantIds.includes(focusParticipant.id) ? (
+              <button type="button" className="room-focus-stop" onClick={() => void stopParticipant(focusParticipant)} title="停止该角色运行">■ 停止运行</button>
+            ) : null}
             <span className="room-focus-hint">换模型只影响后续回复，该角色的上下文（历史）保持不变</span>
           </div>
         ) : null}
@@ -376,7 +398,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
             value={draft}
             placeholder={focusParticipant
               ? `单独对「${focusParticipant.role}」说…（其他角色看不到）· Enter 发送`
-              : "发消息 · @角色名 指定谁回应；说「大家」则全部响应 · Enter 发送"}
+              : "发消息 · @角色名 指定回应者，无 @ 则群发 · 输入「停止」中止运行 · Enter 发送"}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appendRoomMessage, getRoom, listRoomMessages, validParticipantId } from "@/server/rooms";
 import { startParticipantReply } from "@/server/room-runs";
-import { routeRoomMessage, type RoomRouting } from "@/server/room-routing";
+import { parseStopCommand, routeRoomMessage, type RoomRouting } from "@/server/room-routing";
+import { abortActiveChatRun, hasActiveChatRun } from "@/server/active-chat-runs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,43 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
   if (targetParticipantId && !validParticipantId(targetParticipantId)) {
     return NextResponse.json({ error: { code: "invalid_target", message: "私聊目标无效。" } }, { status: 400, headers: NO_STORE });
   }
+  // 停止指令：「停止」/「@角色 停止」直接中止对应角色正在运行的模型
+  const stopCommand = parseStopCommand(typeof payload.content === "string" ? payload.content : "", room);
+  if (stopCommand) {
+    const stopTargets = room.participants.filter((participant) => stopCommand.targets.includes(participant.id));
+    const stopped: string[] = [];
+    for (const participant of stopTargets) {
+      if (!participant.sessionId || !hasActiveChatRun(participant.sessionId)) continue;
+      try {
+        await abortActiveChatRun(participant.sessionId);
+        stopped.push(participant.role);
+      } catch (error) {
+        console.error(`Unable to stop room participant ${participant.role}`, error);
+      }
+    }
+    let stopMessage;
+    try {
+      stopMessage = await appendRoomMessage({ roomId, sender: { type: "user" }, content: payload.content as string });
+    } catch (error) {
+      return NextResponse.json(
+        { error: { code: "invalid_message", message: error instanceof Error ? error.message : "消息无效。" } },
+        { status: 400, headers: NO_STORE },
+      );
+    }
+    return NextResponse.json(
+      {
+        message: stopMessage,
+        triggered: [],
+        stopped,
+        routing: {
+          reason: "stop",
+          detail: stopped.length > 0 ? `已停止：${stopped.join("、")}` : "当前没有正在运行的角色",
+        },
+      },
+      { status: 200, headers: NO_STORE },
+    );
+  }
+
   let routing: RoomRouting | null = null;
   let targets;
   if (targetParticipantId) {

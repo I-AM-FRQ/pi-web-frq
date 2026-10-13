@@ -11,15 +11,29 @@ import type { Room, RoomMessage } from "@/server/rooms";
  * 4. 未匹配（none）——不触发任何角色，仅在房间留痕（前端提示用 @ 指定）
  */
 
-export type RoomRoutingReason = "mention" | "broadcast" | "routing" | "none";
+export type RoomRoutingReason = "mention" | "broadcast" | "routing";
 
 export type RoomRouting = {
   /** 要响应的角色 id 列表 */
   targets: string[];
   reason: RoomRoutingReason;
-  /** 面向用户的说明（例如辨认依据、或未匹配时的提示） */
+  /** 面向用户的说明（例如辨认依据） */
   detail?: string;
 };
+
+/** 停止指令：用户在输入框里说「停止」、「@角色 停止」时用来中止正在运行的模型。 */
+export type RoomStopCommand = { targets: string[]; scope: "all" | "mentioned" };
+
+const STOP_PATTERN = /(停止|停下|中止|终止|\bstop\b|别跑|停下吧)/i;
+
+/** 解析停止指令：命中则返回要停止的角色（@指定则只停那个，否则全部）。 */
+export function parseStopCommand(content: string, room: Room): RoomStopCommand | null {
+  const text = content.trim();
+  if (!STOP_PATTERN.test(text)) return null;
+  const mentioned = parseMentions(text, room);
+  if (mentioned.length > 0) return { targets: mentioned, scope: "mentioned" };
+  return { targets: room.participants.map((participant) => participant.id), scope: "all" };
+}
 
 const BROADCAST_PATTERN = /(大家|所有人|各位|全体|你们俩|都看下|都说说|一起看)/;
 
@@ -36,7 +50,7 @@ export function parseMentions(content: string, room: Room): string[] {
   return hits;
 }
 
-/** 让决策模型判断该由谁回应；返回角色名列表（空数组表示无人需要回应）。 */
+/** 让决策模型判断该由谁回应；返回角色名列表（空数组表示无法明确判断）。 */
 async function routingByDecisionModel(input: {
   room: Room;
   content: string;
@@ -71,7 +85,7 @@ async function routingByDecisionModel(input: {
   });
   if (!result.ok) return null;
   const raw = result.decision.trim();
-  if (/^none\b/i.test(raw) || raw === "NONE" || raw.startsWith("无需")) return { names: [], detail: "决策模型判断无需角色介入" };
+  if (/^none\b/i.test(raw) || raw === "NONE" || raw.startsWith("无需")) return { names: [], detail: "决策模型未能明确指向" };
   // 只解析首行（模型往往会在后面附上理由，若全量匹配会把理由里提到的角色也误判为响应者）。
   const firstLine = raw.split("\n")[0].trim();
   const names = room.participants
@@ -101,18 +115,21 @@ export async function routeRoomMessage(input: { room: Room; content: string; mes
     return { targets: room.participants.map((participant) => participant.id), reason: "broadcast", detail: "识别为群发消息" };
   }
 
-  // 3) 决策模型辨认
+  // 3) 决策模型辨认（能明确指向则只触发那几个角色）
   try {
     const routed = await routingByDecisionModel({ room, content, messages });
-    if (routed) {
+    if (routed && routed.names.length > 0) {
       const targets = room.participants.filter((participant) => routed.names.includes(participant.role)).map((participant) => participant.id);
       if (targets.length > 0) return { targets, reason: "routing", detail: routed.detail };
-      return { targets: [], reason: "none", detail: routed.detail ?? "没有角色需要介入" };
     }
   } catch (error) {
     console.error("Room message routing failed", error);
   }
 
-  // 4) 未配置决策模型或辨认失败：不触发，提示用 @ 指定
-  return { targets: [], reason: "none", detail: "未匹配到角色：可用 @角色名 指定，或直接说“大家”触发全部角色" };
+  // 4) 没有明确指向就是群发（不拦截）：消息仍然发给所有角色，由它们自行决定是否回应
+  return {
+    targets: room.participants.map((participant) => participant.id),
+    reason: "broadcast",
+    detail: "未明确指向 → 群发（无关角色可回复 [SKIP]）",
+  };
 }
