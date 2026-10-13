@@ -178,7 +178,8 @@ export default function Home() {
   }, []);
 
   const refreshRooms = rooms.refreshRooms;
-  useEffect(() => { void refreshRooms(selectedProjectId); }, [refreshRooms, selectedProjectId]);
+  // 房间与会话一样按项目分组展示：这里加载全部房间，由侧边栏分发到各自项目下。
+  useEffect(() => { void refreshRooms(); }, [refreshRooms]);
   const selectedSessionId = sessions.selectedSessionId;
   const { toasts: frqToasts, dismissToast: dismissFrqToast } = useFrqCompletionNotifier(selectedSessionId, settings.completionAlert);
   const refreshCurrentDetail = sessions.refreshCurrentDetail;
