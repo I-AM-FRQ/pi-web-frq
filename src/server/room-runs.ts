@@ -4,6 +4,8 @@ import { hasActiveChatRun, publishActiveChatRunEvent, registerActiveChatRun, unr
 import { invalidateSessionIndex } from "@/server/sessions";
 import { appendRoomMessage, setParticipantSession, type Room, type RoomMessage, type RoomParticipant } from "@/server/rooms";
 import { publishSessionEvent } from "@/server/session-events";
+import { createLoopDetector } from "@/server/loop-detector";
+import { askDecisionModel } from "@/server/decision";
 
 /**
  * 聊天室角色响应编排。
@@ -133,7 +135,44 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 	}
 
 	const streamed = { assistantText: "", thinkingText: "" };
-	const unsubscribe = session.subscribe((event) => publishSessionEvent(sessionId, event, streamed));
+	// 房间角色同样受重复输出保护：命中后先本地提醒，再请决策模型给出监督意见（多模型协作场景）。
+	const loopDetector = createLoopDetector();
+	let loopReminders = 0;
+	const checkRepeatedOutput = (kind: "text" | "thinking", delta: string) => {
+		if (process.env.PI_WEB_LOOP_DETECTION === "0") return;
+		const signal = loopDetector.push(kind, delta);
+		if (!signal || loopReminders >= 2) return;
+		loopReminders += 1;
+		loopDetector.reset();
+		if (!session.steer) return;
+		try {
+			void Promise.resolve(session.steer(
+				`[系统提醒] 检测到你正在重复输出相同内容（${signal.reason}）。请立即停止重复：如果任务已经完成，直接给出最终结论；如果还没完成，换一个思路继续。`,
+			)).catch(() => undefined);
+		} catch {
+			// steer 失败不影响正常输出
+		}
+		void (async () => {
+			try {
+				const advice = await askDecisionModel({
+					kind: "supervision",
+					question: `房间「${room.name}」中角色「${participant.role}」的任务：${input.content}`,
+					context: streamed.assistantText.slice(-4000) || signal.sample,
+				});
+				if (!advice.ok || !session.steer) return;
+				await Promise.resolve(session.steer(`[监督意见 · ${advice.model}] ${advice.decision}`));
+			} catch {
+				// 监督补充失败时本地提醒已生效
+			}
+		})();
+	};
+	const unsubscribe = session.subscribe((event) => {
+		const beforeText = streamed.assistantText;
+		const beforeThinking = streamed.thinkingText;
+		publishSessionEvent(sessionId, event, streamed);
+		if (streamed.assistantText.length > beforeText.length) checkRepeatedOutput("text", streamed.assistantText.slice(beforeText.length));
+		if (streamed.thinkingText.length > beforeThinking.length) checkRepeatedOutput("thinking", streamed.thinkingText.slice(beforeThinking.length));
+	});
 	registerActiveChatRun(sessionId, session);
 	publishActiveChatRunEvent(sessionId, {
 		type: "start",
