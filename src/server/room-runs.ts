@@ -39,6 +39,10 @@ export function buildRoomPrompt(input: {
 }): string {
 	const { room, participant, content, visibility } = input;
 	const lines: string[] = [`[聊天室「${room.name}」] 你是房间中的角色「${participant.role}」。`];
+	// 角色卡：预设提示词，每轮触发都注入，持续约束该角色的职责、风格与边界。
+	if (participant.rolePrompt) {
+		lines.push("", "【角色卡 · 每轮生效】", participant.rolePrompt);
+	}
 	if (visibility === "private") {
 		lines.push(
 			"",

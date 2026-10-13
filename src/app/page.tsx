@@ -13,6 +13,7 @@ import { useWorkspaceGit } from "@/client/use-workspace-git";
 import { ConversationView } from "@/components/conversation-view";
 import { SessionSidebar } from "@/components/session-sidebar";
 import { RoomView } from "@/components/room-view";
+import { CreateRoomModal } from "@/components/create-room-modal";
 import { useRooms } from "@/client/use-rooms";
 import { WorkbenchSidePanel } from "@/components/workbench-side-panel";
 import { ChatComposer } from "@/components/chat-composer";
@@ -109,6 +110,9 @@ export default function Home() {
   const sessions = useSessions();
   const rooms = useRooms();
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  // 新建聊天室模态框：记录要创建到哪个项目下
+  const [roomModalProjectId, setRoomModalProjectId] = useState<string | null | undefined>(undefined);
+  const [creatingRoom, setCreatingRoom] = useState(false);
   // 让回调引用始终指向最新实现（JSX 中的处理器闭包不受影响）
   const createRoomRef = useRef(rooms.createRoom);
   const selectRoomRef = useRef(rooms.selectRoom);
@@ -234,29 +238,19 @@ export default function Home() {
     });
   }, [finalizeWakeRun, resumeChat, runFor]);
 
-  /** 新建聊天室：输入角色名，用当前默认模型初始化（模型之后可随时更换）。 */
-  const createRoomForProject = useCallback(async (projectId: string | null) => {
-    const input = window.prompt("输入角色名（用逗号分隔），例如：开发者,审查者", "开发者,审查者");
-    if (!input) return;
-    const roleNames = input.split(/[,，]/).map((value) => value.trim()).filter(Boolean).slice(0, 8);
-    if (roleNames.length === 0) return;
-    const defaultModel = models[0] ? `${models[0].provider}:${models[0].id}` : "";
-    if (!defaultModel) {
-      window.alert("还没有可用模型，请先在「模型」中配置。");
-      return;
-    }
+  /** 新建聊天室：由模态框收集角色/模型/角色卡后创建。 */
+  const createRoomFromModal = useCallback(async (input: { name: string; roles: Array<{ role: string; modelKey: string; rolePrompt?: string }> }) => {
+    const projectId = roomModalProjectId ?? null;
+    setCreatingRoom(true);
     try {
-      const room = await createRoomRef.current({
-        projectId,
-        name: roleNames.length > 1 ? `聊天室 · ${roleNames.join("/")}` : `聊天室 · ${roleNames[0]}`,
-        roles: roleNames.map((role) => ({ role, modelKey: defaultModel })),
-      });
+      const room = await createRoomRef.current({ projectId, name: input.name, roles: input.roles });
       setSelectedRoomId(room.id);
       selectRoomRef.current(room.id);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "创建聊天室失败。");
+      setRoomModalProjectId(undefined);
+    } finally {
+      setCreatingRoom(false);
     }
-  }, [models]);
+  }, [roomModalProjectId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -630,7 +624,7 @@ export default function Home() {
           onDeleteSession={sessions.deleteSession}
           rooms={rooms.rooms}
           selectedRoomId={selectedRoomId}
-          onNewRoom={(projectId: string | null) => { void createRoomForProject(projectId); setMobileDrawer(null); }}
+          onNewRoom={(projectId: string | null) => { setRoomModalProjectId(projectId); setMobileDrawer(null); }}
           onSelectRoom={(roomId: string) => { setSelectedRoomId(roomId); rooms.selectRoom(roomId); setMobileDrawer(null); }}
           onDeleteRoom={(roomId: string) => { void rooms.deleteRoom(roomId); if (selectedRoomId === roomId) setSelectedRoomId(null); }}
         />
@@ -696,6 +690,15 @@ export default function Home() {
       {globalSettingsOpen ? <GlobalSettingsModal models={models} onClose={() => setGlobalSettingsOpen(false)} /> : null}
       {providerConfigOpen ? <ProviderConfigModal onClose={() => setProviderConfigOpen(false)} onChanged={() => { void loadModels(); }} /> : null}
       {runConfigTab ? <AgentResourcesModal kind={runConfigTab} onClose={() => setRunConfigTab(null)} onChanged={setAgentResources} /> : null}
+      {roomModalProjectId !== undefined ? (
+        <CreateRoomModal
+          models={models}
+          projectName={roomModalProjectId ? sessions.projects.find((project) => project.id === roomModalProjectId)?.name ?? null : null}
+          creating={creatingRoom}
+          onClose={() => setRoomModalProjectId(undefined)}
+          onCreate={createRoomFromModal}
+        />
+      ) : null}
 
       <WorkspaceFilePreview key={`${selectedProjectId ?? "default"}:${previewPath ?? "closed"}`} path={previewPath} projectId={selectedProjectId} initialLine={previewLine} onClose={closePreview} onInsert={insertReference} />
       <WorkspaceGitDiff diff={git.diff} loading={git.diffLoading} error={git.diffError} onClose={git.closeDiff} />

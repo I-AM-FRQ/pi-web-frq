@@ -18,6 +18,8 @@ export type RoomParticipant = {
   id: string;
   /** 角色名，例如“开发者”“审查者”。角色与模型解耦。 */
   role: string;
+  /** 角色卡：预设提示词，每次该角色被触发时都会注入（约束它的职责、风格与边界）。 */
+  rolePrompt?: string;
   /** 当前使用的模型，"provider:id"。可随时更换，会话上下文不受影响。 */
   modelKey: string;
   /** 该角色独立的持久会话 id；空字符串表示尚未开始（会话在首次响应时创建）。 */
@@ -57,6 +59,8 @@ const ROOM_ID_PATTERN = /^room-[a-z0-9-]{4,80}$/;
 const PARTICIPANT_ID_PATTERN = /^participant-[a-z0-9-]{4,80}$/;
 const MODEL_KEY_PATTERN = /^[A-Za-z0-9._-]{1,80}:[A-Za-z0-9._:/-]{1,200}$/;
 const MAX_ROLE_LENGTH = 40;
+/** 角色卡（预设提示词）上限：每轮都会注入，过长会持续吃上下文。 */
+export const MAX_ROLE_PROMPT_LENGTH = 4_000;
 const MAX_PARTICIPANTS = 8;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 
@@ -78,6 +82,15 @@ export function normalizeRole(value: unknown): string {
   const role = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (role.length < 1 || role.length > MAX_ROLE_LENGTH) throw new Error(`角色名长度需为 1 到 ${MAX_ROLE_LENGTH} 个字符。`);
   return role;
+}
+
+export function normalizeRolePrompt(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("角色卡必须是文本。");
+  const prompt = value.replace(/\r\n/g, "\n").trim();
+  if (!prompt) return undefined;
+  if (prompt.length > MAX_ROLE_PROMPT_LENGTH) throw new Error(`角色卡过长（上限 ${MAX_ROLE_PROMPT_LENGTH} 字符）。`);
+  return prompt;
 }
 
 export function normalizeModelKey(value: unknown): string {
@@ -161,15 +174,19 @@ export async function listRoomParticipantSessionIds(): Promise<Set<string>> {
 export type CreateRoomInput = {
   projectId?: string | null;
   name: string;
-  /** 初始参与者：角色名 + 模型（模型后续可改）。 */
-  roles: Array<{ role: string; modelKey: string }>;
+  /** 初始参与者：角色名 + 模型（模型后续可改）+ 可选角色卡。 */
+  roles: Array<{ role: string; modelKey: string; rolePrompt?: string }>;
 };
 
 export async function createRoom(input: CreateRoomInput): Promise<Room> {
   const name = normalizeName(input.name);
   if (!Array.isArray(input.roles) || input.roles.length === 0) throw new Error("聊天室至少需要一个角色。");
   if (input.roles.length > MAX_PARTICIPANTS) throw new Error(`聊天室最多支持 ${MAX_PARTICIPANTS} 个角色。`);
-  const roles = input.roles.map((item) => ({ role: normalizeRole(item.role), modelKey: normalizeModelKey(item.modelKey) }));
+  const roles = input.roles.map((item) => ({
+    role: normalizeRole(item.role),
+    modelKey: normalizeModelKey(item.modelKey),
+    rolePrompt: normalizeRolePrompt(item.rolePrompt),
+  }));
   const names = new Set(roles.map((item) => item.role));
   if (names.size !== roles.length) throw new Error("角色名不能重复。");
 
@@ -177,6 +194,7 @@ export async function createRoom(input: CreateRoomInput): Promise<Room> {
   const participants: RoomParticipant[] = roles.map((item) => ({
     id: `participant-${randomUUID().slice(0, 8)}`,
     role: item.role,
+    ...(item.rolePrompt ? { rolePrompt: item.rolePrompt } : {}),
     modelKey: item.modelKey,
     sessionId: "",
     createdAt: now,
@@ -235,8 +253,9 @@ export async function deleteRoom(roomId: string): Promise<void> {
   }
 }
 
-export async function addParticipant(roomId: string, input: { role: string; modelKey: string }): Promise<Room> {
+export async function addParticipant(roomId: string, input: { role: string; modelKey: string; rolePrompt?: string }): Promise<Room> {
   const role = normalizeRole(input.role);
+  const rolePrompt = normalizeRolePrompt(input.rolePrompt);
   const modelKey = normalizeModelKey(input.modelKey);
   const existing = await getRoom(roomId);
   if (!existing) throw new Error("聊天室不存在。");
@@ -245,6 +264,7 @@ export async function addParticipant(roomId: string, input: { role: string; mode
   const participant: RoomParticipant = {
     id: `participant-${randomUUID().slice(0, 8)}`,
     role,
+    ...(rolePrompt ? { rolePrompt } : {}),
     modelKey,
     sessionId: "",
     createdAt: new Date().toISOString(),
@@ -252,16 +272,24 @@ export async function addParticipant(roomId: string, input: { role: string; mode
   return updateRoom(roomId, (room) => ({ ...room, participants: [...room.participants, participant] }));
 }
 
-/** 更新参与者：改角色名或更换模型（换模型不改变会话上下文）。 */
-export async function updateParticipant(roomId: string, participantId: string, patch: { role?: string; modelKey?: string }): Promise<Room> {
+/** 更新参与者：改角色名、更换模型（换模型不改变会话上下文）或修改角色卡。 */
+export async function updateParticipant(roomId: string, participantId: string, patch: { role?: string; modelKey?: string; rolePrompt?: string | null }): Promise<Room> {
   if (!validParticipantId(participantId)) throw new Error("参与者无效。");
   const role = patch.role === undefined ? undefined : normalizeRole(patch.role);
   const modelKey = patch.modelKey === undefined ? undefined : normalizeModelKey(patch.modelKey);
-  if (role === undefined && modelKey === undefined) throw new Error("没有需要更新的字段。");
+  const rolePrompt = patch.rolePrompt === undefined ? undefined : normalizeRolePrompt(patch.rolePrompt);
+  const clearRolePrompt = patch.rolePrompt === null;
+  if (role === undefined && modelKey === undefined && rolePrompt === undefined && !clearRolePrompt) throw new Error("没有需要更新的字段。");
   return updateRoom(roomId, (room) => {
-    const participants = room.participants.map((participant) => participant.id === participantId
-      ? { ...participant, ...(role !== undefined ? { role } : {}), ...(modelKey !== undefined ? { modelKey } : {}) }
-      : participant);
+    const participants = room.participants.map((participant) => {
+      if (participant.id !== participantId) return participant;
+      const next: RoomParticipant = { ...participant };
+      if (role !== undefined) next.role = role;
+      if (modelKey !== undefined) next.modelKey = modelKey;
+      if (clearRolePrompt) delete next.rolePrompt;
+      else if (rolePrompt !== undefined) next.rolePrompt = rolePrompt;
+      return next;
+    });
     if (!participants.some((participant) => participant.id === participantId)) throw new Error("参与者不存在。");
     if (role !== undefined && participants.filter((participant) => participant.role === role).length > 1) throw new Error("角色名不能重复。");
     return { ...room, participants };

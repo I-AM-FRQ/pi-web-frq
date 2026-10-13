@@ -36,7 +36,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: { code: "invalid_project", message: "项目标识无效。" } }, { status: 400, headers: NO_STORE });
   }
   const roles = Array.isArray(payload.roles)
-    ? payload.roles.map((item) => (item && typeof item === "object" ? { role: (item as { role?: unknown }).role, modelKey: (item as { modelKey?: unknown }).modelKey } : {}))
+    ? payload.roles.map((item) => (item && typeof item === "object"
+      ? {
+        role: (item as { role?: unknown }).role,
+        modelKey: (item as { modelKey?: unknown }).modelKey,
+        rolePrompt: (item as { rolePrompt?: unknown }).rolePrompt,
+      }
+      : {}))
     : undefined;
   if (!roles) {
     return NextResponse.json({ error: { code: "invalid_roles", message: "需要提供角色列表。" } }, { status: 400, headers: NO_STORE });
@@ -45,7 +51,7 @@ export async function POST(request: NextRequest) {
     const room = await createRoom({
       projectId,
       name: payload.name as string,
-      roles: roles as Array<{ role: string; modelKey: string }>,
+      roles: roles as Array<{ role: string; modelKey: string; rolePrompt?: string }>,
     });
     return NextResponse.json({ room }, { status: 201, headers: NO_STORE });
   } catch (error) {
