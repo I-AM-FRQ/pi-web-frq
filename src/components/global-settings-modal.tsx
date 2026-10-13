@@ -26,6 +26,7 @@ type SystemInfo = {
   projectWorkspacesRoot: string;
   savedProjectWorkspacesRoot: string;
   accessKey?: string;
+  decisionModel?: string;
 };
 
 type SettingsSectionId = "system" | "appearance" | "session";
@@ -116,6 +117,7 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
   const [serviceSaving, setServiceSaving] = useState(false);
   const [serviceNotice, setServiceNotice] = useState("");
   const [accessKey, setAccessKey] = useState("");
+  const [decisionModelDraft, setDecisionModelDraft] = useState("");
   const [accessKeyBusy, setAccessKeyBusy] = useState(false);
   const [accessKeyNotice, setAccessKeyNotice] = useState("");
   const [customPrompt, setCustomPrompt] = useState("");
@@ -137,6 +139,7 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
         setWorkspaceDraft(payload.savedWorkspace);
         setProjectRootDraft(payload.savedProjectWorkspacesRoot);
         setAccessKey(payload.accessKey ?? "");
+        setDecisionModelDraft(payload.decisionModel ?? "");
         setServiceDirty(false);
       } catch (caught) {
         setSystemInfoError(caught instanceof Error ? caught.message : "无法读取服务信息。");
@@ -166,7 +169,7 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
         const response = await fetch("/api/system/info", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ port: portDraft, workspace: workspaceDraft, projectWorkspacesRoot: projectRootDraft }),
+          body: JSON.stringify({ port: portDraft, workspace: workspaceDraft, projectWorkspacesRoot: projectRootDraft, decisionModel: decisionModelDraft }),
         });
         const payload = await response.json() as { error?: { message?: unknown } };
         if (!response.ok) throw new Error(typeof payload.error?.message === "string" ? payload.error.message : "保存失败。");
@@ -277,6 +280,20 @@ export function GlobalSettingsModal({ models, onClose }: GlobalSettingsModalProp
               <div className="settings-field-control">
                 <input id="setting-port" className="settings-text-input" type="text" inputMode="numeric" value={portDraft} onChange={(event) => { setPortDraft(event.target.value); setServiceDirty(true); setServiceNotice(""); }} aria-label="服务端口" />
                 {portPending ? <span className="settings-pending">重启后生效</span> : null}
+              </div>
+            </div>
+            <div className="settings-row">
+              <div><strong>决策模型</strong><span className="settings-hint">跑偏监督与岔路决策由它拍板（无工具、只做判断；保存后立即生效）</span></div>
+              <div className="settings-field-control">
+                <select
+                  className="settings-select"
+                  aria-label="决策模型"
+                  value={decisionModelDraft}
+                  onChange={(event) => { setDecisionModelDraft(event.target.value); setServiceDirty(true); setServiceNotice(""); }}
+                >
+                  <option value="">关闭（不启用监督/决策）</option>
+                  {models.map((model) => <option key={`${model.provider}:${model.id}`} value={`${model.provider}:${model.id}`}>{model.name}</option>)}
+                </select>
               </div>
             </div>
             <div className="settings-row">

@@ -33,7 +33,7 @@ function readVersion(): string {
 export async function GET() {
   const port = process.env.PORT && /^\d+$/.test(process.env.PORT) ? process.env.PORT : "30142";
   const [saved, accessKey] = await Promise.all([
-    readServiceConfig().catch(() => ({ port: Number(port), workspace, projectWorkspacesRoot: "" })),
+    readServiceConfig().catch(() => ({ port: Number(port), workspace, projectWorkspacesRoot: "", decisionModel: "" })),
     getAccessKey(),
   ]);
   return NextResponse.json({
@@ -49,6 +49,7 @@ export async function GET() {
     savedWorkspace: saved.workspace,
     projectWorkspacesRoot: process.env.PI_WEB_PROJECT_WORKSPACES_DIR ?? DEFAULT_PROJECT_WORKSPACES_ROOT,
     savedProjectWorkspacesRoot: saved.projectWorkspacesRoot,
+    decisionModel: saved.decisionModel ?? "",
   }, { headers: NO_STORE });
 }
 
@@ -62,7 +63,7 @@ export async function PUT(request: NextRequest) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: { code: "invalid_request", message: "请求体必须是对象。" } }, { status: 400, headers: NO_STORE });
   }
-  const input = body as { port?: unknown; workspace?: unknown; projectWorkspacesRoot?: unknown };
+  const input = body as { port?: unknown; workspace?: unknown; projectWorkspacesRoot?: unknown; decisionModel?: unknown };
   if (input.port !== undefined && typeof input.port !== "number" && typeof input.port !== "string") {
     return NextResponse.json({ error: { code: "invalid_service_config", message: "端口必须是 1-65535 之间的整数。" } }, { status: 400, headers: NO_STORE });
   }
@@ -72,13 +73,24 @@ export async function PUT(request: NextRequest) {
   if (input.projectWorkspacesRoot !== undefined && typeof input.projectWorkspacesRoot !== "string") {
     return NextResponse.json({ error: { code: "invalid_service_config", message: "项目默认保存位置必须是绝对路径。" } }, { status: 400, headers: NO_STORE });
   }
+  if (input.decisionModel !== undefined && typeof input.decisionModel !== "string") {
+    return NextResponse.json({ error: { code: "invalid_service_config", message: "决策模型必须是 \"provider:model\" 或空字符串。" } }, { status: 400, headers: NO_STORE });
+  }
   try {
-    const patch: { port?: number; workspace?: string; projectWorkspacesRoot?: string } = {};
+    const patch: { port?: number; workspace?: string; projectWorkspacesRoot?: string; decisionModel?: string } = {};
     if (input.port !== undefined) patch.port = parseServicePort(input.port);
     if (input.workspace !== undefined) patch.workspace = parseServiceWorkspace(input.workspace);
     if (input.projectWorkspacesRoot !== undefined) patch.projectWorkspacesRoot = parseServiceProjectRoot(input.projectWorkspacesRoot);
+    if (input.decisionModel !== undefined) {
+      const value = input.decisionModel.trim();
+      // 空字符串表示关闭决策/监督模型
+      if (value && !/^[A-Za-z0-9._-]{1,80}:[A-Za-z0-9._:/-]{1,200}$/.test(value)) {
+        return NextResponse.json({ error: { code: "invalid_service_config", message: '决策模型格式应为 "provider:model"。' } }, { status: 400, headers: NO_STORE });
+      }
+      patch.decisionModel = value;
+    }
     const saved = await writeServiceConfig(patch);
-    return NextResponse.json({ savedPort: saved.port, savedWorkspace: saved.workspace, savedProjectWorkspacesRoot: saved.projectWorkspacesRoot }, { headers: NO_STORE });
+    return NextResponse.json({ savedPort: saved.port, savedWorkspace: saved.workspace, savedProjectWorkspacesRoot: saved.projectWorkspacesRoot, decisionModel: saved.decisionModel ?? "" }, { headers: NO_STORE });
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : "无法保存服务配置。";
     return NextResponse.json({ error: { code: "invalid_service_config", message } }, { status: 400, headers: NO_STORE });

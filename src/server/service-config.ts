@@ -9,6 +9,8 @@ export type ServiceConfig = {
   workspace: string;
   projectWorkspacesRoot: string;
   accessKey?: string;
+  /** 决策/监督模型（"provider:model"）：跑偏监督与岔路决策由它拍板；为空表示未启用。 */
+  decisionModel?: string;
 };
 
 export type ServiceConfigPatch = Partial<ServiceConfig>;
@@ -29,12 +31,13 @@ export function expandHomePath(value: string): string {
 
 function parseConfig(raw: string): Partial<ServiceConfig> {
   try {
-    const value = JSON.parse(raw) as { port?: unknown; workspace?: unknown; projectWorkspacesRoot?: unknown; accessKey?: unknown };
+    const value = JSON.parse(raw) as { port?: unknown; workspace?: unknown; projectWorkspacesRoot?: unknown; accessKey?: unknown; decisionModel?: unknown };
     const result: Partial<ServiceConfig> = {};
     if (typeof value.port === "number" && Number.isInteger(value.port) && value.port >= 1 && value.port <= 65535) result.port = value.port;
     if (typeof value.workspace === "string" && value.workspace.trim().length > 0) result.workspace = value.workspace.trim();
     if (typeof value.projectWorkspacesRoot === "string" && value.projectWorkspacesRoot.trim().length > 0) result.projectWorkspacesRoot = value.projectWorkspacesRoot.trim();
     if (typeof value.accessKey === "string" && value.accessKey.length > 0) result.accessKey = value.accessKey;
+    if (typeof value.decisionModel === "string" && value.decisionModel.trim().length > 0) result.decisionModel = value.decisionModel.trim();
     return result;
   } catch {
     return {};
@@ -50,6 +53,7 @@ export async function readServiceConfig(): Promise<ServiceConfig> {
       workspace: saved.workspace ?? workspace,
       projectWorkspacesRoot: saved.projectWorkspacesRoot ?? process.env.PI_WEB_PROJECT_WORKSPACES_DIR ?? DEFAULT_PROJECT_WORKSPACES_ROOT,
       accessKey: saved.accessKey,
+      decisionModel: saved.decisionModel,
     };
   } catch {
     return { port: DEFAULT_PORT, workspace, projectWorkspacesRoot: process.env.PI_WEB_PROJECT_WORKSPACES_DIR ?? DEFAULT_PROJECT_WORKSPACES_ROOT };

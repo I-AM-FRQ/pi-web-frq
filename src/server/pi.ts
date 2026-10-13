@@ -95,6 +95,22 @@ export function thinkingLevelsFor(model: AvailableModel): ThinkingLevel[] {
   return getSupportedThinkingLevels(model) as ThinkingLevel[];
 }
 
+/**
+ * 无工具的一次性会话（内存会话，不落盘）。
+ * 用于“决策/监督”这类只需要模型做判断、绝不能执行动作的调用。
+ */
+export async function createToolFreeSession(model: AvailableModel, thinkingLevel?: ThinkingLevel, root = workspace) {
+  const services = await createPiServices(undefined, root);
+  return createAgentSessionFromServices({
+    services,
+    sessionManager: SessionManager.inMemory(root),
+    model,
+    thinkingLevel,
+    tools: [],
+    customTools: [],
+  });
+}
+
 export async function getWorkspaceSystemPrompt(root = workspace, resources?: { skills?: string[]; plugins?: string[] }) {
   const model = (await getAvailableModels())[0];
   if (!model) throw new Error("No models are available.");

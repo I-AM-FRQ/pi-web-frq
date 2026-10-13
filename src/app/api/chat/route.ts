@@ -16,6 +16,7 @@ import { toolResultText, toolStepLabel, sanitizeSubagentDetails } from "@/server
 import { AttachmentValidationError, storeImageAttachments } from "@/server/attachments";
 import { SSE_HEADERS, sseEvent } from "@/server/sse";
 import { createLoopDetector } from "@/server/loop-detector";
+import { askDecisionModel } from "@/server/decision";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -249,14 +250,38 @@ export async function POST(request: NextRequest) {
         loopDetector.reset();
         const runningSession = activeChatSession(sessionId);
         if (!runningSession?.steer) return;
+
+        // 第一层：立即注入固定提醒（必须在 run 仍活跃时投递，否则 steer 会被丢弃）。
+        const fallback = `检测到你正在重复输出相同内容（${signal.reason}）。请立即停止重复：如果任务已经完成，直接给出最终结论；如果还没完成，换一个思路继续，不要重复前面的内容。`;
         try {
-          void Promise.resolve(runningSession.steer(
-            `[系统提醒] 检测到你正在重复输出相同内容（${signal.reason}）。请立即停止重复：如果任务已经完成，直接给出最终结论；如果还没完成，换一个思路继续，不要重复前面的内容。`,
-          )).catch(() => undefined);
+          void Promise.resolve(runningSession.steer(`[系统提醒] ${fallback}`)).catch(() => undefined);
         } catch {
           // steer 失败不影响正常流式输出
         }
-      }; 
+
+        // 第二层：请决策模型做监督判断；若 run 仍在运行，把它的意见作为补充提醒注入。
+        void (async () => {
+          let advice = null;
+          try {
+            advice = await askDecisionModel({
+              kind: "supervision",
+              question: visiblePrompt,
+              context: streamedAssistantText.slice(-4000) || signal.sample,
+            });
+          } catch (error) {
+            console.error("Decision model supervision failed", error);
+          }
+          if (!advice?.ok) return;
+          const active = activeChatSession(sessionId);
+          if (!active?.steer) return;
+          try {
+            await Promise.resolve(active.steer(`[监督意见 · ${advice.model}] ${advice.decision}`));
+            console.log(`Loop supervision by ${advice.model}: ${advice.decision.slice(0, 200)}`);
+          } catch {
+            // 监督补充失败时固定提醒已注入，忽略
+          }
+        })();
+      };
       const emit = (event: ChatStreamEvent) => {
         if (subscriberDetached) return;
         try {
