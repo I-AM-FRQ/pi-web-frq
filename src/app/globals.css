@@ -1570,3 +1570,9 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .room-composer-input { background: transparent; border: none; box-sizing: border-box; color: var(--text); display: block; font: inherit; font-size: 13px; line-height: 1.6; max-height: 180px; min-height: 44px; outline: none; padding: 12px 14px 4px; resize: none; width: 100%; }
 .room-composer-actions { align-items: center; display: flex; justify-content: space-between; min-height: 44px; padding: 2px 8px 6px 14px; }
 .room-composer-hint { color: var(--text-faint); font-size: 11px; }
+
+/* 聊天室列表行：复用会话行的视觉（左边框、hover、hover 显示删除） */
+.project-rooms { display: flex; flex-direction: column; gap: 1px; list-style: none; margin: 2px 0 4px 24px; padding: 0; }
+.room-badge { align-items: center; background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 4px; color: var(--accent); display: inline-flex; flex: 0 0 auto; font-size: 9px; height: 15px; justify-content: center; padding: 0 3px; }
+.room-count { color: var(--text-faint); flex: 0 0 auto; font-size: 10px; }
+.project-session:has(.room-badge) .project-session-select { color: var(--text); }

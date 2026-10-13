@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { deleteProjectPersistentSession } from "@/server/session-workspaces";
 
 /**
  * 聊天室（多模型协作房间）。
@@ -142,6 +143,21 @@ export async function getRoom(roomId: string): Promise<Room | undefined> {
   return room ? { ...room, participants: [...room.participants] } : undefined;
 }
 
+/**
+ * 所有聊天室角色持有的会话 id。
+ * 这些会话属于房间（通过房间视图访问），不应在普通会话列表里单独展示。
+ */
+export async function listRoomParticipantSessionIds(): Promise<Set<string>> {
+  const registry = await readRegistry();
+  const ids = new Set<string>();
+  for (const room of registry.rooms) {
+    for (const participant of room.participants) {
+      if (participant.sessionId) ids.add(participant.sessionId);
+    }
+  }
+  return ids;
+}
+
 export type CreateRoomInput = {
   projectId?: string | null;
   name: string;
@@ -202,13 +218,21 @@ async function updateRoom(roomId: string, mutate: (room: Room) => Room): Promise
 }
 
 export async function deleteRoom(roomId: string): Promise<void> {
+  const room = await getRoom(roomId);
   await enqueueWrite(async () => {
     const registry = await readRegistry();
-    const next = registry.rooms.filter((room) => room.id !== roomId);
+    const next = registry.rooms.filter((candidate) => candidate.id !== roomId);
     if (next.length === registry.rooms.length) throw new Error("聊天室不存在。");
     registry.rooms = next;
     await writeRegistry(registry);
   });
+  // 一并删除角色会话，避免留下无法访问的孤儿会话。
+  for (const participant of room?.participants ?? []) {
+    if (!participant.sessionId) continue;
+    await deleteProjectPersistentSession(participant.sessionId).catch((error) => {
+      console.error("Unable to delete room participant session", error);
+    });
+  }
 }
 
 export async function addParticipant(roomId: string, input: { role: string; modelKey: string }): Promise<Room> {
