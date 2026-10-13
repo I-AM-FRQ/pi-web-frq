@@ -1647,3 +1647,6 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .create-room-role-card-empty { color: var(--text-faint); font-size: 12px; margin: 0; }
 .create-room-role-card-dir { display: block; font-size: 11px; margin-top: 4px; opacity: 0.8; }
 .create-room-hint { color: var(--text-faint); font-size: 11px; margin: 2px 0 0; }
+
+/* 聊天室：消息路由提示（已点名/由决策模型辨认/未匹配） */
+.room-routing-notice { background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 8px; color: var(--text-secondary); font-size: 12px; margin: 0 clamp(14px, 4vw, 40px) 4px; padding: 6px 10px; }

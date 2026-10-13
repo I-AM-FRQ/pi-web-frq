@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appendRoomMessage, getRoom, listRoomMessages, validParticipantId } from "@/server/rooms";
 import { startParticipantReply } from "@/server/room-runs";
+import { routeRoomMessage, type RoomRouting } from "@/server/room-routing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,11 +37,17 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
   if (targetParticipantId && !validParticipantId(targetParticipantId)) {
     return NextResponse.json({ error: { code: "invalid_target", message: "私聊目标无效。" } }, { status: 400, headers: NO_STORE });
   }
-  const targets = targetParticipantId
-    ? room.participants.filter((participant) => participant.id === targetParticipantId)
-    : room.participants;
-  if (targets.length === 0) {
-    return NextResponse.json({ error: { code: "participant_not_found", message: "目标角色不存在。" } }, { status: 404, headers: NO_STORE });
+  let routing: RoomRouting | null = null;
+  let targets;
+  if (targetParticipantId) {
+    targets = room.participants.filter((participant) => participant.id === targetParticipantId);
+    if (targets.length === 0) {
+      return NextResponse.json({ error: { code: "participant_not_found", message: "目标角色不存在。" } }, { status: 404, headers: NO_STORE });
+    }
+  } else {
+    // 群聊：@指定优先，其次群发关键词，否则由决策模型辨认该谁回应（避免所有角色无脑响应）
+    routing = await routeRoomMessage({ room, content: typeof payload.content === "string" ? payload.content : "", messages: await listRoomMessages(roomId) });
+    targets = room.participants.filter((participant) => routing!.targets.includes(participant.id));
   }
   const visibility = targetParticipantId ? "private" as const : "room" as const;
 
@@ -77,7 +84,13 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
   }
 
   return NextResponse.json(
-    { message: stored, triggered: targets.map((participant) => participant.id), outcomes },
+    {
+      message: stored,
+      triggered: targets.map((participant) => participant.id),
+      outcomes,
+      // 路由说明：让前端能提示“已点名：X”/“未匹配到角色，可用 @ 指定”
+      ...(routing ? { routing: { reason: routing.reason, detail: routing.detail ?? "" } } : {}),
+    },
     { status: 202, headers: NO_STORE },
   );
 }

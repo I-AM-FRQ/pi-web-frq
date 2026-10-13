@@ -1,6 +1,6 @@
 import { createChatSession, getAvailableModels } from "@/server/pi";
 import { createProjectPersistentSession, openProjectPersistentSession, workspaceForProject, workspaceForSession } from "@/server/session-workspaces";
-import { hasActiveChatRun, publishActiveChatRunEvent, registerActiveChatRun, unregisterActiveChatRun } from "@/server/active-chat-runs";
+import { activeChatSession, hasActiveChatRun, publishActiveChatRunEvent, registerActiveChatRun, unregisterActiveChatRun } from "@/server/active-chat-runs";
 import { invalidateSessionIndex } from "@/server/sessions";
 import { appendRoomMessage, setParticipantSession, type Room, type RoomMessage, type RoomParticipant } from "@/server/rooms";
 import { publishSessionEvent } from "@/server/session-events";
@@ -86,7 +86,7 @@ export type StartParticipantReplyInput = {
 };
 
 export type StartParticipantReplyResult =
-	| { ok: true; sessionId: string }
+	| { ok: true; sessionId: string; delivered?: "steer" | "prompt" }
 	| { ok: false; reason: "busy" | "model_unavailable" | "failed"; detail?: string };
 
 /** 准备角色的持久会话：已存在则打开；未创建（或已失效）则新建，并把新 sessionId 记回房间。 */
@@ -109,8 +109,21 @@ async function ensureParticipantSession(room: Room, participant: RoomParticipant
 
 export async function startParticipantReply(input: StartParticipantReplyInput): Promise<StartParticipantReplyResult> {
 	const { room, participant, visibility } = input;
-	// 同一角色不允许并发运行（避免上下文交叉与重复回复）。
-	if (participant.sessionId && hasActiveChatRun(participant.sessionId)) return { ok: false, reason: "busy" };
+	// 角色正在运行时：优先用 steer 把消息作为“引导”投递给当前回合（避免排队等待或被跳过）。
+	if (participant.sessionId && hasActiveChatRun(participant.sessionId)) {
+		const active = activeChatSession(participant.sessionId);
+		if (active?.steer) {
+			try {
+				const roleCardContent = participant.roleCard ? await readRoleCard(participant.roleCard) : undefined;
+				await Promise.resolve(active.steer(buildRoomPrompt({ ...input, roleCardContent })));
+				return { ok: true, sessionId: participant.sessionId, delivered: "steer" };
+			} catch (error) {
+				console.error(`Room participant ${participant.role} steer failed`, error);
+				return { ok: false, reason: "failed", detail: error instanceof Error ? error.message : String(error) };
+			}
+		}
+		return { ok: false, reason: "busy" };
+	}
 
 	let sessionManager;
 	let projectWorkspace: string;
@@ -219,5 +232,5 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 		invalidateSessionIndex(projectWorkspace);
 	});
 
-	return { ok: true, sessionId };
+	return { ok: true, sessionId, delivered: "prompt" };
 }

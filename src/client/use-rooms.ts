@@ -116,15 +116,21 @@ export function useRooms() {
     setDetail((current) => (current && current.room.id === roomId ? { ...current, room: payload.room } : current));
   }, []);
 
-  /** 发送消息：不传 targetParticipantId 为群聊（广播给所有角色），传则为私聊（只有该角色可见并响应）。 */
-  const sendMessage = useCallback(async (roomId: string, content: string, targetParticipantId?: string) => {
+  /**
+   * 发送消息：不传 targetParticipantId 为群聊（由 @/群发/决策模型辨认决定谁响应），
+   * 传则为私聊（只有该角色可见并响应）。返回路由说明供界面提示。
+   */
+  const sendMessage = useCallback(async (roomId: string, content: string, targetParticipantId?: string): Promise<{ reason: string; detail: string } | undefined> => {
     const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(targetParticipantId ? { content, targetParticipantId } : { content }),
     });
     if (!response.ok) throw new Error(await readError(response, "发送消息失败。"));
+    const payload = (await response.json().catch(() => ({}))) as { routing?: { reason?: string; detail?: string } };
     await loadDetail(roomId);
+    if (!payload.routing) return undefined;
+    return { reason: payload.routing.reason ?? "", detail: payload.routing.detail ?? "" };
   }, [loadDetail]);
 
   /** 更换角色模型：只换底层模型，会话上下文保留。 */

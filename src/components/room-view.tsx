@@ -12,7 +12,7 @@ type RoomViewProps = {
   detail: RoomDetail;
   models: ModelDescriptor[];
   disabled?: boolean;
-  onSend: (content: string, targetParticipantId?: string) => Promise<void>;
+  onSend: (content: string, targetParticipantId?: string) => Promise<{ reason: string; detail: string } | undefined>;
   onChangeModel: (participantId: string, modelKey: string) => Promise<void>;
   onAddParticipant: (role: string, modelKey: string) => Promise<void>;
   onRemoveParticipant: (participantId: string) => Promise<void>;
@@ -55,6 +55,8 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
   const [newRoleModel, setNewRoleModel] = useState("");
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [participantDetail, setParticipantDetail] = useState<SessionDetail | null>(null);
+  const [routingNotice, setRoutingNotice] = useState("");
+  const routingTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const resumedSessionRef = useRef<string | null>(null);
@@ -147,13 +149,29 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
     setSending(true);
     setError("");
     try {
-      await onSend(content, focusParticipant?.id);
+      const routing = await onSend(content, focusParticipant?.id);
       setDraft("");
+      if (routing?.detail) {
+        setRoutingNotice(routing.detail);
+        if (routingTimerRef.current !== null) window.clearTimeout(routingTimerRef.current);
+        routingTimerRef.current = window.setTimeout(() => setRoutingNotice(""), 6_000);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "发送失败。");
     } finally {
       setSending(false);
     }
+  };
+
+  /** 把 @角色名 高亮（用 markdown 加粗），让“在和谁说话”一眼可见。 */
+  const highlightMentions = (content: string) => {
+    let result = content;
+    for (const participant of room.participants) {
+      if (!participant.role) continue;
+      const escaped = participant.role.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      result = result.replace(new RegExp(`[@＠]${escaped}`, "g"), `**@${participant.role}**`);
+    }
+    return result;
   };
 
   const renderMessage = (message: RoomMessage) => {
@@ -184,7 +202,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
             <time className="chat-time">{formatTime(message.createdAt)}</time>
           </div>
           <div className={`chat-bubble${isUser ? " chat-bubble-out" : ""}`}>
-            <ChatMarkdown content={message.content} />
+            <ChatMarkdown content={isUser ? highlightMentions(message.content) : message.content} />
           </div>
         </div>
       </div>
@@ -347,6 +365,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
         </div>
       )}
 
+      {routingNotice ? <p className="room-routing-notice" role="status">{routingNotice}</p> : null}
       {error ? <p className="chat-error" role="alert">{error}</p> : null}
 
       <div className="room-composer">
@@ -355,7 +374,9 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
             ref={inputRef}
             className="room-composer-input"
             value={draft}
-            placeholder={focusParticipant ? `单独对「${focusParticipant.role}」说…（其他角色看不到）· Enter 发送` : "在聊天室里发言 · Enter 发送，Shift+Enter 换行"}
+            placeholder={focusParticipant
+              ? `单独对「${focusParticipant.role}」说…（其他角色看不到）· Enter 发送`
+              : "发消息 · @角色名 指定谁回应；说「大家」则全部响应 · Enter 发送"}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
