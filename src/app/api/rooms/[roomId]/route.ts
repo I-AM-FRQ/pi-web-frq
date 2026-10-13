@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteRoom, getRoom, listRoomMessages, renameRoom } from "@/server/rooms";
+import { hasActiveChatRun } from "@/server/active-chat-runs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +14,11 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ro
     return NextResponse.json({ error: { code: "room_not_found", message: "聊天室不存在。" } }, { status: 404, headers: NO_STORE });
   }
   const messages = await listRoomMessages(roomId);
-  return NextResponse.json({ room, messages }, { headers: NO_STORE });
+  // 正在运行的角色：前端据此显示“正在输入…”气泡
+  const runningParticipantIds = room.participants
+    .filter((participant) => participant.sessionId && hasActiveChatRun(participant.sessionId))
+    .map((participant) => participant.id);
+  return NextResponse.json({ room, messages, runningParticipantIds }, { headers: NO_STORE });
 }
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ roomId: string }> }) {

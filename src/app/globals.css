@@ -1512,7 +1512,7 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .widget-prototype-stage { margin-top: 24px; }
 .widget-prototype-stage-label { color: var(--text-faint); font-size: 11px; margin: 0; }
 
-/* ---- 聊天室（多模型协作） ---- */
+/* ---- 聊天室（多模型协作 · 微信群聊风格） ---- */
 .room-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .room-header { border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; padding: 12px 18px; }
 .room-header-main { align-items: center; display: flex; gap: 10px; min-width: 0; }
@@ -1532,23 +1532,41 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .room-add-participant { background: transparent; border: 1px dashed var(--border-strong); border-radius: 999px; color: var(--text-faint); cursor: pointer; font: inherit; font-size: 12px; padding: 3px 10px; }
 .room-role-form { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
 .room-role-input, .room-role-model { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 4px 8px; }
-.room-role-add { background: var(--accent); border: none; border-radius: 6px; color: #fff; cursor: pointer; font: inherit; font-size: 12px; padding: 4px 12px; }
-.room-focus-bar { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 18px 0; }
+.room-role-add { background: var(--accent); border: none; border-radius: 6px; color: var(--accent-contrast, #fff); cursor: pointer; font: inherit; font-size: 12px; padding: 4px 12px; }
+.room-focus-bar { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
 .room-focus-model { align-items: center; color: var(--text-secondary); display: inline-flex; font-size: 12px; gap: 6px; }
 .room-focus-model select { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 3px 8px; }
 .room-focus-hint { color: var(--text-faint); font-size: 11px; }
-.room-messages { display: flex; flex-direction: column; gap: 14px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+.room-messages { display: flex; flex-direction: column; gap: 14px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px clamp(14px, 4vw, 40px); }
 .room-empty { color: var(--text-faint); font-size: 13px; margin: 24px 0; text-align: center; }
-.room-message { border-left: 2px solid var(--border); padding-left: 12px; }
-.room-message-user { border-left-color: var(--accent); }
-.room-message-participant { border-left-color: var(--border-strong); }
-.room-message-head { align-items: center; display: flex; gap: 8px; margin-bottom: 4px; }
-.room-message-author { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
-.room-message-author-button { background: transparent; border: none; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; padding: 0; text-decoration: underline dotted; }
-.room-message-author-button:hover { color: var(--accent); }
-.room-message-private { background: color-mix(in srgb, var(--warning, #d29922) 18%, transparent); border-radius: 4px; color: var(--warning, #d29922); font-size: 10px; padding: 1px 6px; }
-.room-message-time { color: var(--text-faint); font-size: 11px; margin-left: auto; }
-.room-message-body { color: var(--text); font-size: 13px; }
-.room-composer { align-items: flex-end; border-top: 1px solid var(--border); display: flex; gap: 8px; padding: 10px 18px 14px; }
-.room-composer-input { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; color: var(--text); flex: 1 1 auto; font: inherit; font-size: 13px; min-height: 44px; padding: 8px 10px; resize: vertical; }
-.room-composer-input:focus { border-color: var(--accent); outline: none; }
+.chat-row { display: flex; gap: 8px; max-width: min(760px, 82%); }
+.chat-row-in { align-self: flex-start; }
+.chat-row-out { align-self: flex-end; flex-direction: row-reverse; }
+.chat-avatar { align-items: center; background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-secondary); cursor: pointer; display: flex; flex: 0 0 auto; font: inherit; font-size: 13px; font-weight: 600; height: 32px; justify-content: center; padding: 0; width: 32px; }
+.chat-avatar:hover { border-color: var(--accent); color: var(--accent); }
+.chat-column { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.chat-row-out .chat-column { align-items: flex-end; }
+.chat-meta { align-items: center; display: flex; gap: 6px; }
+.chat-row-out .chat-meta { flex-direction: row-reverse; }
+.chat-author { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.chat-author-button { background: transparent; border: none; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; padding: 0; }
+.chat-author-button:hover { color: var(--accent); }
+.chat-private-tag { background: color-mix(in srgb, var(--warning, #d29922) 18%, transparent); border-radius: 4px; color: var(--warning, #d29922); font-size: 10px; padding: 1px 6px; }
+.chat-time { color: var(--text-faint); font-size: 11px; }
+.chat-typing-label { color: var(--accent); font-size: 11px; }
+.chat-bubble { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 4px 12px 12px 12px; color: var(--text); font-size: 13px; line-height: 1.6; padding: 9px 12px; overflow-wrap: anywhere; }
+.chat-bubble-out { background: color-mix(in srgb, var(--accent) 18%, var(--bg-raised)); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 12px 4px 12px 12px; }
+.chat-bubble .markdown > :first-child { margin-top: 0; }
+.chat-bubble .markdown > :last-child { margin-bottom: 0; }
+.chat-bubble .markdown p { margin: 0 0 8px; }
+.chat-bubble-typing { align-items: center; display: inline-flex; gap: 4px; padding: 12px 14px; }
+.chat-bubble-typing i { animation: chat-typing 1.2s infinite ease-in-out; background: var(--text-faint); border-radius: 50%; display: block; height: 6px; width: 6px; }
+.chat-bubble-typing i:nth-child(2) { animation-delay: 0.15s; }
+.chat-bubble-typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-typing { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+.room-composer { padding: 10px clamp(14px, 4vw, 40px) 16px; }
+.room-composer-wrap { background: var(--bg-input, var(--bg-raised)); border: 1px solid var(--border-input, var(--border)); border-radius: 14px; box-sizing: border-box; margin: 0 auto; max-width: 860px; width: 100%; }
+.room-composer-wrap:focus-within { border-color: var(--accent); }
+.room-composer-input { background: transparent; border: none; box-sizing: border-box; color: var(--text); display: block; font: inherit; font-size: 13px; line-height: 1.6; max-height: 180px; min-height: 44px; outline: none; padding: 12px 14px 4px; resize: none; width: 100%; }
+.room-composer-actions { align-items: center; display: flex; justify-content: space-between; min-height: 44px; padding: 2px 8px 6px 14px; }
+.room-composer-hint { color: var(--text-faint); font-size: 11px; }

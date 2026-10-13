@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Room, RoomMessage } from "@/contracts";
 
-export type RoomDetail = { room: Room; messages: RoomMessage[] };
+export type RoomDetail = { room: Room; messages: RoomMessage[]; runningParticipantIds?: string[] };
 
 export type CreateRoomInput = {
   projectId: string | null;
