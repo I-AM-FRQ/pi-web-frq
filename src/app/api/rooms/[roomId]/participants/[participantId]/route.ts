@@ -19,12 +19,13 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ r
     return NextResponse.json({ error: { code: "invalid_request", message: "请求体必须是合法 JSON。" } }, { status: 400, headers: NO_STORE });
   }
   const payload = body && typeof body === "object" && !Array.isArray(body)
-    ? (body as { role?: unknown; modelKey?: unknown; rolePrompt?: unknown })
+    ? (body as { role?: unknown; modelKey?: unknown; roleCard?: unknown; rolePrompt?: unknown })
     : {};
   try {
     const room = await updateParticipant(roomId, participantId, {
       ...(typeof payload.role === "string" ? { role: payload.role } : {}),
       ...(typeof payload.modelKey === "string" ? { modelKey: payload.modelKey } : {}),
+      ...(payload.roleCard === null ? { roleCard: null } : typeof payload.roleCard === "string" ? { roleCard: payload.roleCard } : {}),
       // null 表示清除角色卡；字符串表示更新
       ...(payload.rolePrompt === null ? { rolePrompt: null } : typeof payload.rolePrompt === "string" ? { rolePrompt: payload.rolePrompt } : {}),
     });

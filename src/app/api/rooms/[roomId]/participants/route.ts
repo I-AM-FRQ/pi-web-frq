@@ -16,12 +16,13 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
     return NextResponse.json({ error: { code: "invalid_request", message: "请求体必须是合法 JSON。" } }, { status: 400, headers: NO_STORE });
   }
   const payload = body && typeof body === "object" && !Array.isArray(body)
-    ? (body as { role?: unknown; modelKey?: unknown; rolePrompt?: unknown })
+    ? (body as { role?: unknown; modelKey?: unknown; roleCard?: unknown; rolePrompt?: unknown })
     : {};
   try {
     const room = await addParticipant(roomId, {
       role: payload.role as string,
       modelKey: payload.modelKey as string,
+      ...(typeof payload.roleCard === "string" ? { roleCard: payload.roleCard } : {}),
       ...(typeof payload.rolePrompt === "string" ? { rolePrompt: payload.rolePrompt } : {}),
     });
     return NextResponse.json({ room }, { status: 201, headers: NO_STORE });

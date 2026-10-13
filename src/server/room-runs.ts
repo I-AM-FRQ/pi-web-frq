@@ -6,6 +6,7 @@ import { appendRoomMessage, setParticipantSession, type Room, type RoomMessage, 
 import { publishSessionEvent } from "@/server/session-events";
 import { createLoopDetector } from "@/server/loop-detector";
 import { askDecisionModel } from "@/server/decision";
+import { readRoleCard } from "@/server/role-cards";
 
 /**
  * 聊天室角色响应编排。
@@ -38,12 +39,17 @@ export function buildRoomPrompt(input: {
 	content: string;
 	messages: RoomMessage[];
 	visibility: "room" | "private";
+	/** 角色卡内容（从 md 文件动态读取后传入，避免同步函数里做 IO） */
+	roleCardContent?: string;
 }): string {
 	const { room, participant, content, visibility } = input;
 	const lines: string[] = [`[聊天室「${room.name}」] 你是房间中的角色「${participant.role}」。`];
-	// 角色卡：预设提示词，每轮触发都注入，持续约束该角色的职责、风格与边界。
+	// 角色卡：从 markdown 文件动态读取（文件名即角色名），每轮触发都注入。
+	if (input.roleCardContent) {
+		lines.push("", `【角色卡 · ${participant.roleCard ?? "角色"} · 每轮生效】`, input.roleCardContent);
+	}
 	if (participant.rolePrompt) {
-		lines.push("", "【角色卡 · 每轮生效】", participant.rolePrompt);
+		lines.push("", "【补充说明 · 每轮生效】", participant.rolePrompt);
 	}
 	if (visibility === "private") {
 		lines.push(
@@ -125,7 +131,10 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 	if (!model) return { ok: false, reason: "model_unavailable" };
 	if (hasActiveChatRun(sessionId)) return { ok: false, reason: "busy" };
 
-	const promptText = buildRoomPrompt(input);
+	const promptText = buildRoomPrompt({
+		...input,
+		roleCardContent: participant.roleCard ? await readRoleCard(participant.roleCard) : undefined,
+	});
 	let session;
 	try {
 		({ session } = await createChatSession(model, undefined, sessionManager, undefined, projectWorkspace));

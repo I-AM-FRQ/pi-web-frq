@@ -1605,7 +1605,7 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .create-room-count { color: var(--text-faint); font-size: 11px; font-weight: 400; }
 .create-room-role { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 11px; display: flex; flex-direction: column; gap: 8px; padding: 8px; }
 .create-room-role.expanded { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-.create-room-role-row { align-items: center; display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.create-room-role-row { align-items: center; display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr) auto auto auto auto; }
 .create-room-role-name { background: var(--bg-input); border: 1px solid var(--border-input); border-radius: 8px; color: var(--text); font: inherit; font-size: 13px; font-weight: 600; min-width: 0; padding: 7px 10px; }
 .create-room-role-name:focus { border-color: var(--accent); outline: 0; }
 .create-room-role-model { background: var(--bg-input); border: 1px solid var(--border-input); border-radius: 8px; color: var(--text-secondary); font: inherit; font-size: 12px; max-width: 190px; padding: 7px 8px; }
@@ -1639,3 +1639,11 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
   .create-room-role-row { grid-template-columns: minmax(0, 1fr) auto; }
   .create-room-role-name { grid-column: 1 / -1; }
 }
+
+/* 角色卡：下拉选择 + 内容预览（来源 ~/.pi/agent/role-cards/*.md） */
+.create-room-role-card-select { background: var(--bg-input); border: 1px solid var(--border-input); border-radius: 8px; color: var(--text-secondary); font: inherit; font-size: 12px; max-width: 170px; padding: 7px 8px; }
+.create-room-role-card-select:focus { border-color: var(--accent); outline: 0; }
+.create-room-role-card-content { background: var(--bg-input); border: 1px solid var(--border); border-radius: 9px; color: var(--text-secondary); font-family: inherit; font-size: 12px; line-height: 1.6; margin: 0; max-height: 200px; overflow: auto; padding: 9px 11px; white-space: pre-wrap; }
+.create-room-role-card-empty { color: var(--text-faint); font-size: 12px; margin: 0; }
+.create-room-role-card-dir { display: block; font-size: 11px; margin-top: 4px; opacity: 0.8; }
+.create-room-hint { color: var(--text-faint); font-size: 11px; margin: 2px 0 0; }

@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
       ? {
         role: (item as { role?: unknown }).role,
         modelKey: (item as { modelKey?: unknown }).modelKey,
+        roleCard: (item as { roleCard?: unknown }).roleCard,
         rolePrompt: (item as { rolePrompt?: unknown }).rolePrompt,
       }
       : {}))
@@ -51,7 +52,7 @@ export async function POST(request: NextRequest) {
     const room = await createRoom({
       projectId,
       name: payload.name as string,
-      roles: roles as Array<{ role: string; modelKey: string; rolePrompt?: string }>,
+      roles: roles as Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>,
     });
     return NextResponse.json({ room }, { status: 201, headers: NO_STORE });
   } catch (error) {

@@ -6,25 +6,21 @@ import type { ModelDescriptor } from "@/contracts";
 export type RoleDraft = {
   role: string;
   modelKey: string;
-  /** 角色卡：预设提示词，该角色每轮被触发时都会注入 */
+  /** 角色卡名（对应 ~/.pi/agent/role-cards/<名称>.md，内容每轮动态读取并注入） */
+  roleCard: string;
+  /** 角色卡之外的补充说明（可选） */
   rolePrompt: string;
 };
+
+export type RoleCardSummary = { name: string; summary: string; content: string };
 
 type CreateRoomModalProps = {
   models: ModelDescriptor[];
   projectName?: string | null;
   creating?: boolean;
   onClose: () => void;
-  onCreate: (input: { name: string; roles: Array<{ role: string; modelKey: string; rolePrompt?: string }> }) => Promise<void>;
+  onCreate: (input: { name: string; roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }> }) => Promise<void>;
 };
-
-/** 内置角色卡模板：一键填充常用的职责设定。 */
-export const ROLE_CARD_TEMPLATES: Array<{ role: string; prompt: string }> = [
-  { role: "开发者", prompt: "你负责把讨论结论落成可运行、可维护的实现：给出具体改动（文件/接口/数据结构）、边界处理与验证方式；不确定处显式标注为假设，不假装已完成。" },
-  { role: "审查者", prompt: "你负责独立核对其他角色的结论：逐条检查证据是否充分、逻辑是否有跳跃、是否存在未被发现的反例；只依据可验证的事实发言，必要时给出可复现的失败样例。" },
-  { role: "架构师", prompt: "你关注系统边界、接口契约与长期可演进性：评估方案的可扩展性、耦合度、失败模式与迁移成本，明确给出取舍建议与理由。" },
-  { role: "产品经理", prompt: "你关注用户价值与交付范围：明确目标、验收标准与优先级，阻止范围蔓延，确保每一步产出都能被验收。" },
-];
 
 const MAX_ROLES = 8;
 
@@ -32,21 +28,45 @@ function modelKeyOf(model: ModelDescriptor): string {
   return `${model.provider}:${model.id}`;
 }
 
-/** 新建聊天室：配置参与角色、各自模型与角色卡。 */
+/** 新建聊天室：配置参与角色、各自模型与角色卡（角色卡来自 ~/.pi/agent/role-cards/*.md）。 */
 export function CreateRoomModal({ models, projectName, creating = false, onClose, onCreate }: CreateRoomModalProps) {
   const defaultModelKey = models[0] ? modelKeyOf(models[0]) : "";
   const [name, setName] = useState("多模型协作");
   const [roles, setRoles] = useState<RoleDraft[]>(() => [
-    { role: ROLE_CARD_TEMPLATES[0].role, modelKey: defaultModelKey, rolePrompt: ROLE_CARD_TEMPLATES[0].prompt },
-    { role: ROLE_CARD_TEMPLATES[1].role, modelKey: defaultModelKey, rolePrompt: ROLE_CARD_TEMPLATES[1].prompt },
+    { role: "", modelKey: defaultModelKey, roleCard: "", rolePrompt: "" },
+    { role: "", modelKey: defaultModelKey, roleCard: "", rolePrompt: "" },
   ]);
+  const [cards, setCards] = useState<RoleCardSummary[]>([]);
+  const [cardsDirectory, setCardsDirectory] = useState("");
   const [error, setError] = useState("");
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(0);
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     nameRef.current?.focus();
     nameRef.current?.select();
+  }, []);
+
+  // 角色卡从文件目录动态获取（文件名即角色名）
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/role-cards", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = (await response.json()) as { cards?: RoleCardSummary[]; directory?: string };
+        if (cancelled) return;
+        setCards(payload.cards ?? []);
+        setCardsDirectory(payload.directory ?? "");
+        // 默认选中前两张角色卡，方便直接创建
+        setRoles((current) => current.map((item, index) => (
+          item.roleCard || !payload.cards?.[index] ? item : { ...item, roleCard: payload.cards[index].name, role: item.role || payload.cards[index].name }
+        )));
+      } catch {
+        // 读取失败时保持空列表（角色卡可稍后在房间内选择）
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -63,7 +83,7 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
 
   const addRole = () => {
     if (roles.length >= MAX_ROLES) return;
-    setRoles((current) => [...current, { role: "", modelKey: defaultModelKey, rolePrompt: "" }]);
+    setRoles((current) => [...current, { role: "", modelKey: defaultModelKey, roleCard: "", rolePrompt: "" }]);
     setExpandedIndex(roles.length);
   };
 
@@ -72,8 +92,9 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
     setExpandedIndex((current) => (current === index ? null : current !== null && current > index ? current - 1 : current));
   };
 
-  const applyTemplate = (index: number, template: { role: string; prompt: string }) => {
-    patchRole(index, { role: template.role, rolePrompt: template.prompt });
+  const selectCard = (index: number, cardName: string) => {
+    const card = cards.find((item) => item.name === cardName);
+    patchRole(index, { roleCard: cardName, ...(card && !roles[index].role.trim() ? { role: card.name } : {}) });
   };
 
   const submit = async () => {
@@ -82,21 +103,25 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
       setError("请填写房间名称。");
       return;
     }
-    const cleaned = roles.map((item) => ({ role: item.role.trim(), modelKey: item.modelKey, rolePrompt: item.rolePrompt.trim() }));
+    const cleaned = roles.map((item) => ({
+      role: item.role.trim() || item.roleCard.trim(),
+      modelKey: item.modelKey,
+      roleCard: item.roleCard.trim(),
+      rolePrompt: item.rolePrompt.trim(),
+    }));
     if (cleaned.length === 0) {
       setError("至少需要一个角色。");
       return;
     }
     if (cleaned.some((item) => !item.role)) {
-      setError("每个角色都需要填写角色名。");
+      setError("每个角色都需要角色名（或选择角色卡）。");
       return;
     }
     if (cleaned.some((item) => !item.modelKey)) {
       setError("每个角色都需要选择模型。");
       return;
     }
-    const unique = new Set(cleaned.map((item) => item.role));
-    if (unique.size !== cleaned.length) {
+    if (new Set(cleaned.map((item) => item.role)).size !== cleaned.length) {
       setError("角色名不能重复。");
       return;
     }
@@ -104,7 +129,12 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
     try {
       await onCreate({
         name: trimmedName,
-        roles: cleaned.map((item) => ({ role: item.role, modelKey: item.modelKey, ...(item.rolePrompt ? { rolePrompt: item.rolePrompt } : {}) })),
+        roles: cleaned.map((item) => ({
+          role: item.role,
+          modelKey: item.modelKey,
+          ...(item.roleCard ? { roleCard: item.roleCard } : {}),
+          ...(item.rolePrompt ? { rolePrompt: item.rolePrompt } : {}),
+        })),
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "创建失败。");
@@ -138,6 +168,7 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
 
             {roles.map((item, index) => {
               const expanded = expandedIndex === index;
+              const card = cards.find((entry) => entry.name === item.roleCard);
               return (
                 <div key={index} className={`create-room-role${expanded ? " expanded" : ""}`}>
                   <div className="create-room-role-row">
@@ -149,6 +180,15 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
                       onChange={(event) => patchRole(index, { role: event.target.value })}
                     />
                     <select
+                      className="create-room-role-card-select"
+                      value={item.roleCard}
+                      onChange={(event) => selectCard(index, event.target.value)}
+                      title="角色卡（来自 ~/.pi/agent/role-cards/*.md）"
+                    >
+                      <option value="">（不绑定角色卡）</option>
+                      {cards.map((entry) => <option key={entry.name} value={entry.name}>{entry.name}</option>)}
+                    </select>
+                    <select
                       className="create-room-role-model"
                       value={item.modelKey}
                       onChange={(event) => patchRole(index, { modelKey: event.target.value })}
@@ -158,11 +198,11 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
                     </select>
                     <button
                       type="button"
-                      className={`create-room-role-card-toggle${item.rolePrompt.trim() ? " active" : ""}`}
+                      className={`create-room-role-card-toggle${expanded ? " active" : ""}`}
                       onClick={() => setExpandedIndex(expanded ? null : index)}
-                      title={item.rolePrompt.trim() ? "已设置角色卡" : "设置角色卡（预设提示词，每轮注入）"}
+                      title="查看角色卡内容与补充说明"
                     >
-                      角色卡{item.rolePrompt.trim() ? " ✓" : ""}
+                      {expanded ? "收起" : "详情"}
                     </button>
                     <button
                       type="button"
@@ -177,22 +217,21 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
                   </div>
                   {expanded ? (
                     <div className="create-room-role-card">
+                      {card ? (
+                        <pre className="create-room-role-card-content">{card.content.trim().slice(0, 1200)}</pre>
+                      ) : (
+                        <p className="create-room-role-card-empty">
+                          {cards.length === 0 ? "还没有角色卡文件。" : "未绑定角色卡（仅使用补充说明）。"}
+                          {cardsDirectory ? <span className="create-room-role-card-dir">目录：{cardsDirectory}</span> : null}
+                        </p>
+                      )}
                       <textarea
                         value={item.rolePrompt}
                         maxLength={4000}
-                        rows={3}
-                        placeholder="角色卡：这个角色的职责、关注点与边界。每次该角色被触发时都会注入，用于持续约束它的行为。"
+                        rows={2}
+                        placeholder="补充说明（可选）：在角色卡之外额外强调的要求，同样每轮注入。"
                         onChange={(event) => patchRole(index, { rolePrompt: event.target.value })}
                       />
-                      <div className="create-room-templates">
-                        <span>快速填充</span>
-                        {ROLE_CARD_TEMPLATES.map((template) => (
-                          <button key={template.role} type="button" onClick={() => applyTemplate(index, template)}>{template.role}</button>
-                        ))}
-                        {item.rolePrompt.trim() ? (
-                          <button type="button" className="create-room-template-clear" onClick={() => patchRole(index, { rolePrompt: "" })}>清空</button>
-                        ) : null}
-                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -200,6 +239,9 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
             })}
 
             <button type="button" className="create-room-add" onClick={addRole} disabled={roles.length >= MAX_ROLES}>＋ 添加角色</button>
+            <p className="create-room-hint">
+              角色卡从 markdown 文件读取：{cardsDirectory || "~/.pi/agent/role-cards"}（文件名即角色名，编辑文件后立即生效）
+            </p>
           </div>
         </div>
 

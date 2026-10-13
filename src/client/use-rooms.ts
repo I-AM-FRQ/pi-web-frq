@@ -8,7 +8,7 @@ export type RoomDetail = { room: Room; messages: RoomMessage[]; runningParticipa
 export type CreateRoomInput = {
   projectId: string | null;
   name: string;
-  roles: Array<{ role: string; modelKey: string }>;
+  roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>;
 };
 
 type RoomsState = {

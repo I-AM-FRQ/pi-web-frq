@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { deleteProjectPersistentSession } from "@/server/session-workspaces";
+import { validRoleCardName } from "@/server/role-cards";
 
 /**
  * 聊天室（多模型协作房间）。
@@ -18,7 +19,9 @@ export type RoomParticipant = {
   id: string;
   /** 角色名，例如“开发者”“审查者”。角色与模型解耦。 */
   role: string;
-  /** 角色卡：预设提示词，每次该角色被触发时都会注入（约束它的职责、风格与边界）。 */
+  /** 角色卡名（对应 ~/.pi/agent/role-cards/<名称>.md，每次注入时动态读取文件内容）。 */
+  roleCard?: string;
+  /** 角色卡之外的补充说明（可选，同样每轮注入）。 */
   rolePrompt?: string;
   /** 当前使用的模型，"provider:id"。可随时更换，会话上下文不受影响。 */
   modelKey: string;
@@ -82,6 +85,15 @@ export function normalizeRole(value: unknown): string {
   const role = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (role.length < 1 || role.length > MAX_ROLE_LENGTH) throw new Error(`角色名长度需为 1 到 ${MAX_ROLE_LENGTH} 个字符。`);
   return role;
+}
+
+export function normalizeRoleCard(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("角色卡名必须是文本。");
+  const name = value.trim().replace(/\.md$/i, "");
+  if (!name) return undefined;
+  if (!validRoleCardName(name)) throw new Error("角色卡名称无效（不允许路径字符，长度 1-40）。");
+  return name;
 }
 
 export function normalizeRolePrompt(value: unknown): string | undefined {
@@ -174,8 +186,8 @@ export async function listRoomParticipantSessionIds(): Promise<Set<string>> {
 export type CreateRoomInput = {
   projectId?: string | null;
   name: string;
-  /** 初始参与者：角色名 + 模型（模型后续可改）+ 可选角色卡。 */
-  roles: Array<{ role: string; modelKey: string; rolePrompt?: string }>;
+  /** 初始参与者：角色名 + 模型（模型后续可改）+ 可选角色卡名与补充说明。 */
+  roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>;
 };
 
 export async function createRoom(input: CreateRoomInput): Promise<Room> {
@@ -185,6 +197,7 @@ export async function createRoom(input: CreateRoomInput): Promise<Room> {
   const roles = input.roles.map((item) => ({
     role: normalizeRole(item.role),
     modelKey: normalizeModelKey(item.modelKey),
+    roleCard: normalizeRoleCard(item.roleCard),
     rolePrompt: normalizeRolePrompt(item.rolePrompt),
   }));
   const names = new Set(roles.map((item) => item.role));
@@ -194,6 +207,7 @@ export async function createRoom(input: CreateRoomInput): Promise<Room> {
   const participants: RoomParticipant[] = roles.map((item) => ({
     id: `participant-${randomUUID().slice(0, 8)}`,
     role: item.role,
+    ...(item.roleCard ? { roleCard: item.roleCard } : {}),
     ...(item.rolePrompt ? { rolePrompt: item.rolePrompt } : {}),
     modelKey: item.modelKey,
     sessionId: "",
@@ -253,8 +267,9 @@ export async function deleteRoom(roomId: string): Promise<void> {
   }
 }
 
-export async function addParticipant(roomId: string, input: { role: string; modelKey: string; rolePrompt?: string }): Promise<Room> {
+export async function addParticipant(roomId: string, input: { role: string; modelKey: string; roleCard?: string; rolePrompt?: string }): Promise<Room> {
   const role = normalizeRole(input.role);
+  const roleCard = normalizeRoleCard(input.roleCard);
   const rolePrompt = normalizeRolePrompt(input.rolePrompt);
   const modelKey = normalizeModelKey(input.modelKey);
   const existing = await getRoom(roomId);
@@ -264,6 +279,7 @@ export async function addParticipant(roomId: string, input: { role: string; mode
   const participant: RoomParticipant = {
     id: `participant-${randomUUID().slice(0, 8)}`,
     role,
+    ...(roleCard ? { roleCard } : {}),
     ...(rolePrompt ? { rolePrompt } : {}),
     modelKey,
     sessionId: "",
@@ -273,19 +289,23 @@ export async function addParticipant(roomId: string, input: { role: string; mode
 }
 
 /** 更新参与者：改角色名、更换模型（换模型不改变会话上下文）或修改角色卡。 */
-export async function updateParticipant(roomId: string, participantId: string, patch: { role?: string; modelKey?: string; rolePrompt?: string | null }): Promise<Room> {
+export async function updateParticipant(roomId: string, participantId: string, patch: { role?: string; modelKey?: string; roleCard?: string | null; rolePrompt?: string | null }): Promise<Room> {
   if (!validParticipantId(participantId)) throw new Error("参与者无效。");
   const role = patch.role === undefined ? undefined : normalizeRole(patch.role);
   const modelKey = patch.modelKey === undefined ? undefined : normalizeModelKey(patch.modelKey);
+  const roleCard = patch.roleCard === undefined ? undefined : normalizeRoleCard(patch.roleCard);
+  const clearRoleCard = patch.roleCard === null;
   const rolePrompt = patch.rolePrompt === undefined ? undefined : normalizeRolePrompt(patch.rolePrompt);
   const clearRolePrompt = patch.rolePrompt === null;
-  if (role === undefined && modelKey === undefined && rolePrompt === undefined && !clearRolePrompt) throw new Error("没有需要更新的字段。");
+  if (role === undefined && modelKey === undefined && roleCard === undefined && !clearRoleCard && rolePrompt === undefined && !clearRolePrompt) throw new Error("没有需要更新的字段。");
   return updateRoom(roomId, (room) => {
     const participants = room.participants.map((participant) => {
       if (participant.id !== participantId) return participant;
       const next: RoomParticipant = { ...participant };
       if (role !== undefined) next.role = role;
       if (modelKey !== undefined) next.modelKey = modelKey;
+      if (clearRoleCard) delete next.roleCard;
+      else if (roleCard !== undefined) next.roleCard = roleCard;
       if (clearRolePrompt) delete next.rolePrompt;
       else if (rolePrompt !== undefined) next.rolePrompt = rolePrompt;
       return next;
