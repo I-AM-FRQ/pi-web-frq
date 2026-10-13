@@ -365,8 +365,15 @@ export default function Home() {
     const projectId = sessionId ? undefined : selectedProjectId ?? undefined;
     if (sessionId) detailRefreshesRef.current.delete(sessionId);
 
+    // 断线自动重连中：优先直接发送新消息（先中断重连），避免输入框“发不出去”。
+    const reconnecting = Boolean(sessionId && activeRun?.reconnecting);
+    if (reconnecting && sessionId) {
+      chat.abandonReconnect(sessionId);
+      showCommandNotice("已中断重连，正在发送新消息。", false);
+    }
+
     // 流式中可引导当前运行，或按 FIFO 排队；引导消息由 SSE 写入时间线。
-    if (isStreaming) {
+    if (isStreaming && !reconnecting) {
       if (!sessionId || !activeRun) return false;
       const queueVersionAtSubmit = activeRun.queueVersion;
       void (async () => {

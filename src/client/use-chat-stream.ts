@@ -47,6 +47,8 @@ export type ChatRun = {
   finishedAt: number | null;
   /** 是否为刷新后恢复（重放）旧运行：其 startedAt/finishedAt 是重放耗时，不是真实执行时间。 */
   replay?: boolean;
+  /** 是否处于“断线自动重连中”：此时输入框应允许直接发送新消息，而不是走引导。 */
+  reconnecting?: boolean;
 };
 
 type StreamCallbacks = {
@@ -64,6 +66,11 @@ let runSequence = 0;
 /** 估算字符到 token 的折算系数：中文 1 字≈1 token，英文约 4 字符 1 token，混合取 2.5。 */
 const CHARS_PER_TOKEN = 2.5;
 const SPEED_WINDOW_MS = 3_000;
+
+/** 自动重连的最大尝试次数：超过后结束 run，避免输入框一直被“流式中”阻塞。 */
+const MAX_RECONNECT_ATTEMPTS = 6;
+/** 单次重连请求的超时时间：防止网络半死时 fetch 挂起导致重连卡住。 */
+const RECONNECT_TIMEOUT_MS = 20_000;
 
 /** 重连退避延迟：1s/2s/4s/8s/16s 封顶（attempt 为重试序号，从 0 开始）。 */
 export function reconnectDelayMs(attempt: number): number {
@@ -393,13 +400,16 @@ export function useChatStream() {
     if (reconnectTimersRef.current.has(runId) || reconnectingRunsRef.current.has(runId)) return;
     reconnectingRunsRef.current.add(runId);
     reconnectSessionIdsRef.current.set(runId, sessionId);
-    updateRun(runId, { isStreaming: true, error: "连接已断开，正在自动重连…" });
+    updateRun(runId, { isStreaming: true, reconnecting: true, error: "连接已断开，正在自动重连…" });
 
     const attempt = () => {
       reconnectTimersRef.current.delete(runId);
       reconnectFnsRef.current.delete(runId);
       const controller = new AbortController();
       controllersRef.current.set(runId, controller);
+      // 单次重连超时保护：fetch 长时间挂起时也要能继续重试或放弃（否则输入框会一直卡在流式状态）
+      let timedOut = false;
+      const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, RECONNECT_TIMEOUT_MS);
       void (async () => {
         let terminalReceived = false;
         try {
@@ -407,7 +417,7 @@ export function useChatStream() {
           if (response.status === 404) {
             // 服务端已无活跃运行：任务已完成，结束重连并刷新详情
             finishReconnectRef.current(runId);
-            updateRun(runId, { isStreaming: false, finishedAt: Date.now(), error: "" });
+            updateRun(runId, { isStreaming: false, reconnecting: false, finishedAt: Date.now(), error: "" });
             callbacks.onCompleted?.(sessionId, runId);
             return;
           }
@@ -421,19 +431,29 @@ export function useChatStream() {
           });
           if (!terminalReceived && !controller.signal.aborted) throw new Error("连接再次中断。");
           finishReconnectRef.current(runId);
+          updateRun(runId, { reconnecting: false });
         } catch {
-          if (!controller.signal.aborted) {
+          if (controller.signal.aborted && !timedOut) {
+            // 用户主动停止：直接结束重连
+            finishReconnectRef.current(runId);
+            updateRun(runId, { reconnecting: false });
+          } else {
             const attemptCount = (reconnectAttemptsRef.current.get(runId) ?? 0) + 1;
             reconnectAttemptsRef.current.set(runId, attemptCount);
+            if (attemptCount > MAX_RECONNECT_ATTEMPTS) {
+              // 放弃重连：结束该 run，让输入框恢复可用（不再卡在“流式中”）
+              finishReconnectRef.current(runId);
+              updateRun(runId, { isStreaming: false, reconnecting: false, finishedAt: Date.now(), error: "连接已中断（自动重连失败），可直接重新发送消息。" });
+              return;
+            }
             const delay = reconnectDelayMs(attemptCount - 1);
-            updateRun(runId, { error: "连接已断开，正在自动重连…", isStreaming: true });
+            updateRun(runId, { error: `连接已断开，正在自动重连…（第 ${attemptCount} 次）`, isStreaming: true });
             const fn = () => { attempt(); };
             reconnectFnsRef.current.set(runId, fn);
             reconnectTimersRef.current.set(runId, window.setTimeout(fn, delay));
-          } else {
-            finishReconnectRef.current(runId);
           }
         } finally {
+          window.clearTimeout(timeout);
           controllersRef.current.delete(runId);
         }
       })();
@@ -444,6 +464,18 @@ export function useChatStream() {
   useEffect(() => {
     scheduleReconnectRef.current = scheduleReconnect;
   }, [scheduleReconnect]);
+
+  /**
+   * 主动放弃某会话的重连（用户在断线期间想直接发新消息时调用）。
+   * 结束后输入框立即恢复正常发送，不必等重连超时或刷新页面。
+   */
+  const abandonReconnect = useCallback((sessionId: string) => {
+    for (const [runId, sid] of [...reconnectSessionIdsRef.current]) {
+      if (sid !== sessionId) continue;
+      finishReconnectRef.current(runId);
+      updateRun(runId, { isStreaming: false, reconnecting: false, finishedAt: Date.now(), error: "" });
+    }
+  }, [updateRun]);
 
   const resume = useCallback((sessionId: string, callbacks: StreamCallbacks = {}) => {
     if (activeSessionIdsRef.current.has(sessionId)) return false;
@@ -575,5 +607,5 @@ export function useChatStream() {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
-  return { runs, runFor, runningSessionIds, send, resume, stop, removeRun, createPendingQueueItem, addPendingQueueItem, removePendingQueueItemForRun };
+  return { runs, runFor, runningSessionIds, send, resume, stop, removeRun, abandonReconnect, createPendingQueueItem, addPendingQueueItem, removePendingQueueItemForRun };
 }
