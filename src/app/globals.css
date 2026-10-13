@@ -1583,3 +1583,6 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 @keyframes chat-caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 /* 单角色视图直接复用默认会话渲染，这里只补容器滚动 */
 .room-messages-focus { display: block; padding: 0; }
+
+/* 房间输入框：焦点样式交给外层容器（去掉全局 textarea:focus 的粗 outline） */
+.room-composer-input:focus, .room-composer-input:focus-visible { outline: 0; border-color: transparent; box-shadow: none; }
