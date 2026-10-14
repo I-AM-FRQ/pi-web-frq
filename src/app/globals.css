@@ -1706,3 +1706,9 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .chat-stop:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); }
 .room-focus-stop { background: color-mix(in srgb, var(--danger) 14%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); border-radius: 8px; color: var(--danger); cursor: pointer; font: inherit; font-size: 12px; padding: 5px 12px; }
 .room-focus-stop:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+
+/* 聊天室单角色视图：会话加载失败提示（替代无限“正在恢复”） */
+.room-focus-error { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px; color: var(--text-secondary); font-size: 13px; line-height: 1.7; margin: 48px auto; max-width: 520px; padding: 18px 20px; text-align: center; }
+.room-focus-error p { margin: 0; }
+.room-focus-retry { background: var(--accent); border: 1px solid var(--accent); border-radius: 8px; color: var(--accent-contrast); cursor: pointer; font: inherit; font-size: 12px; margin-top: 12px; padding: 6px 16px; }
+.room-focus-retry:hover { filter: brightness(1.08); }

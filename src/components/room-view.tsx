@@ -55,6 +55,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
   const [newRoleModel, setNewRoleModel] = useState("");
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [participantDetail, setParticipantDetail] = useState<SessionDetail | null>(null);
+  const [participantDetailError, setParticipantDetailError] = useState("");
   const [routingNotice, setRoutingNotice] = useState("");
   const routingTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -80,10 +81,20 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
   const loadParticipantDetail = useCallback(async (sessionId: string) => {
     try {
       const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" });
-      if (!response.ok) return;
+      if (response.status === 404) {
+        // 会话记录已不存在（例如被清理）：给出明确提示而不是一直转圈；发送消息会自动重建
+        setParticipantDetail(null);
+        setParticipantDetailError("该角色的会话记录已不存在（可能已被清理）。直接发一条消息即可为它重新创建会话。");
+        return;
+      }
+      if (!response.ok) {
+        setParticipantDetailError(`加载会话记录失败（HTTP ${response.status}）。`);
+        return;
+      }
       setParticipantDetail((await response.json()) as SessionDetail);
+      setParticipantDetailError("");
     } catch {
-      // 详情拉取失败时保留上一次内容
+      setParticipantDetailError("加载会话记录失败，请检查网络后重试。");
     }
   }, []);
 
@@ -96,6 +107,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
     if (resumedSessionRef.current === participantSessionId) return;
     resumedSessionRef.current = participantSessionId;
     setParticipantDetail(null);
+    setParticipantDetailError("");
     void loadParticipantDetail(participantSessionId);
     participantChat.resume(participantSessionId);
   }, [participantSessionId, loadParticipantDetail, participantChat]);
@@ -356,7 +368,20 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
       {focusParticipant ? (
         // 单角色视图：照搬默认会话的渲染（思考、工具、打字机、Markdown 完全一致）
         <div className="room-messages room-messages-focus" ref={scrollRef}>
-          {participantSessionId ? (
+          {participantDetailError ? (
+            <div className="room-focus-error" role="alert">
+              <p>{participantDetailError}</p>
+              {participantSessionId ? (
+                <button
+                  type="button"
+                  className="room-focus-retry"
+                  onClick={() => { setParticipantDetailError(""); void loadParticipantDetail(participantSessionId); }}
+                >
+                  重试加载
+                </button>
+              ) : null}
+            </div>
+          ) : participantSessionId ? (
             <ConversationView
               conversation={participantDetail?.conversation ?? []}
               pendingPrompt={participantRun?.pendingPrompt ?? ""}
@@ -366,7 +391,7 @@ export function RoomView({ detail, models, disabled, onSend, onChangeModel, onAd
               error={participantRun?.error ?? ""}
               isStreaming={participantStreaming}
               runId={participantRun?.runId ?? ""}
-              isLoading={!participantDetail}
+              isLoading={!participantDetail && !participantDetailError}
               truncated={participantDetail?.truncated.conversation ?? false}
               models={models}
               liveModelName={modelLabel(models, focusParticipant.modelKey)}
