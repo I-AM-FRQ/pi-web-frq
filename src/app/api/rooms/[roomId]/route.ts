@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteRoom, getRoom, listRoomMessages, renameRoom } from "@/server/rooms";
+import { deleteRoom, getRoom, listRoomMessages, renameRoom, setParticipantSession } from "@/server/rooms";
 import { hasActiveChatRun } from "@/server/active-chat-runs";
+import { findSessionAcrossWorkspaces } from "@/server/sessions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,12 +14,25 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ro
   if (!room) {
     return NextResponse.json({ error: { code: "room_not_found", message: "聊天室不存在。" } }, { status: 404, headers: NO_STORE });
   }
+  // 自动修正失效的会话引用：会话文件可能因清理/切换工作区而不在当前目录，
+  // 先跨 workspace 找回；确实不存在则清空引用（前端显示“尚未开始”，发送消息会自动重建）。
+  const repaired = await Promise.all(room.participants.map(async (participant) => {
+    if (!participant.sessionId) return participant;
+    const found = await findSessionAcrossWorkspaces(participant.sessionId);
+    if (found) return participant;
+    await setParticipantSession(roomId, participant.id, "").catch((error) => {
+      console.error("Unable to clear stale participant session", error);
+    });
+    return { ...participant, sessionId: "" };
+  }));
+  const currentRoom = { ...room, participants: repaired };
+
   const messages = await listRoomMessages(roomId);
   // 正在运行的角色：前端据此显示“正在输入…”气泡
-  const runningParticipantIds = room.participants
+  const runningParticipantIds = currentRoom.participants
     .filter((participant) => participant.sessionId && hasActiveChatRun(participant.sessionId))
     .map((participant) => participant.id);
-  return NextResponse.json({ room, messages, runningParticipantIds }, { headers: NO_STORE });
+  return NextResponse.json({ room: currentRoom, messages, runningParticipantIds }, { headers: NO_STORE });
 }
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ roomId: string }> }) {

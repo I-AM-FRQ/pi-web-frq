@@ -316,10 +316,15 @@ export async function updateParticipant(roomId: string, participantId: string, p
   });
 }
 
-/** 记录角色首次响应时创建出来的会话 id（懒创建）。 */
+/**
+ * 记录角色首次响应时创建出来的会话 id（懒创建）。
+ * 传入空字符串表示清空引用（例如该会话已不存在时自动修正房间记录）。
+ */
 export async function setParticipantSession(roomId: string, participantId: string, sessionId: string): Promise<Room> {
   if (!validParticipantId(participantId)) throw new Error("参与者无效。");
-  if (typeof sessionId !== "string" || sessionId.length === 0) throw new Error("会话标识无效。");
+  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (normalized && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(normalized)) throw new Error("会话标识无效。");
+  sessionId = normalized;
   return updateRoom(roomId, (room) => {
     const participants = room.participants.map((participant) => participant.id === participantId ? { ...participant, sessionId } : participant);
     if (!participants.some((participant) => participant.id === participantId)) throw new Error("参与者不存在。");

@@ -4,6 +4,7 @@ import { getProject, getSessionProjectIds, listProjects, removeSessionProjectAss
 import {
   createPersistentSession,
   deletePersistentSession,
+  findSessionAcrossWorkspaces,
   forkPersistentSession,
   getSessionSummary,
   listSessions,
@@ -21,7 +22,12 @@ export async function projectIdForSession(sessionId: string): Promise<string | u
 }
 
 export async function workspaceForSession(sessionId: string): Promise<string> {
-  return workspaceForProject(await projectIdForSession(sessionId));
+  const projectId = await projectIdForSession(sessionId);
+  if (projectId) return workspaceForProject(projectId);
+  // 无项目映射（房间角色会话、切换过默认工作区的历史会话）：用会话自带 cwd 还原真实工作区，
+  // 否则会因工作区不一致而找不到会话文件。
+  const location = await findSessionAcrossWorkspaces(sessionId);
+  return location?.cwd && location.cwd.trim().length > 0 ? location.cwd : workspace;
 }
 
 export async function createProjectPersistentSession(projectId?: string): Promise<SessionManager> {

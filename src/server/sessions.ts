@@ -38,6 +38,7 @@ function indexSessions(root: string, sessions: SessionInfo[]) {
 
 export function invalidateSessionIndex(root = workspace) {
   sessionIndexes.delete(sessionIndexKey(root));
+  allSessionsCache = null;
 }
 
 function baseSessionSummary(session: SessionInfo, firstMessage: string): SessionSummary {
@@ -100,6 +101,34 @@ export async function listSessions(root = workspace): Promise<SessionSummary[]> 
   return Promise.all(sessions.map(async (session) => ({ ...toSessionSummary(session), completed: await hasCompletedRun(session.path) })));
 }
 
+/** 全局（所有 workspace）会话列表缓存：用于跨 workspace 找回会话，避免每次都全量扫描。 */
+const ALL_SESSIONS_TTL_MS = 10_000;
+let allSessionsCache: { expiresAt: number; sessions: SessionInfo[] } | null = null;
+
+async function listAllSessionsCached(): Promise<SessionInfo[]> {
+  if (allSessionsCache && allSessionsCache.expiresAt > Date.now()) return allSessionsCache.sessions;
+  const sessions = await SessionManager.listAll();
+  allSessionsCache = { expiresAt: Date.now() + ALL_SESSIONS_TTL_MS, sessions };
+  return sessions;
+}
+
+/**
+ * 跨 workspace 查找会话。
+ * 房间角色会话、切换过默认工作区的历史会话可能不在当前 workspace 下，
+ * 这里用会话自带 cwd 还原它的真实位置，从而"正确恢复"而不是报找不到。
+ */
+export async function findSessionAcrossWorkspaces(sessionId: string): Promise<{ path: string; cwd: string } | undefined> {
+  try {
+    const sessions = await listAllSessionsCached();
+    const found = sessions.find((candidate) => candidate.id === sessionId);
+    if (!found) return undefined;
+    return { path: found.path, cwd: found.cwd ?? "" };
+  } catch (error) {
+    console.error("Unable to search sessions across workspaces", error);
+    return undefined;
+  }
+}
+
 async function findSession(sessionId: string, root = workspace): Promise<SessionInfo> {
   const cached = sessionIndexes.get(sessionIndexKey(root));
   const indexed = cached && cached.expiresAt > Date.now() ? cached.sessions.get(sessionId) : undefined;
@@ -107,18 +136,24 @@ async function findSession(sessionId: string, root = workspace): Promise<Session
   const sessions = await SessionManager.list(root);
   indexSessions(root, sessions);
   const session = sessions.find((candidate) => candidate.id === sessionId);
-  if (!session) throw new SessionNotFoundError();
-  return session;
+  if (session) return session;
+  // 回退：在其它 workspace 中查找（房间角色会话、切换过默认工作区的历史会话）
+  const found = (await listAllSessionsCached()).find((candidate) => candidate.id === sessionId);
+  if (found) return found;
+  throw new SessionNotFoundError();
 }
 
 export async function openPersistentSession(sessionId: string, root = workspace): Promise<SessionManager> {
   const session = await findSession(sessionId, root);
-  return SessionManager.open(session.path, undefined, root);
+  // 会话可能来自其它 workspace：优先用会话自带的 cwd，避免运行目录错位
+  const cwd = session.cwd && session.cwd.trim().length > 0 ? session.cwd : root;
+  return SessionManager.open(session.path, undefined, cwd);
 }
 
 export async function openPersistentSessionWithSummary(sessionId: string, root = workspace): Promise<{ sessionManager: SessionManager; session: SessionSummary }> {
   const session = await findSession(sessionId, root);
-  return { sessionManager: SessionManager.open(session.path, undefined, root), session: toSessionSummary(session) };
+  const cwd = session.cwd && session.cwd.trim().length > 0 ? session.cwd : root;
+  return { sessionManager: SessionManager.open(session.path, undefined, cwd), session: toSessionSummary(session) };
 }
 
 export function branchPersistentSession(sessionManager: SessionManager, entryId: string): void {
