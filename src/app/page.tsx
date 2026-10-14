@@ -239,11 +239,11 @@ export default function Home() {
   }, [finalizeWakeRun, resumeChat, runFor]);
 
   /** 新建聊天室：由模态框收集角色/模型/角色卡后创建。 */
-  const createRoomFromModal = useCallback(async (input: { name: string; roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }> }) => {
+  const createRoomFromModal = useCallback(async (input: { name: string; roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>; discussionRounds?: number }) => {
     const projectId = roomModalProjectId ?? null;
     setCreatingRoom(true);
     try {
-      const room = await createRoomRef.current({ projectId, name: input.name, roles: input.roles });
+      const room = await createRoomRef.current({ projectId, name: input.name, roles: input.roles, ...(input.discussionRounds ? { discussionRounds: input.discussionRounds } : {}) });
       setSelectedRoomId(room.id);
       selectRoomRef.current(room.id);
       setRoomModalProjectId(undefined);

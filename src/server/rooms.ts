@@ -35,6 +35,8 @@ export type Room = {
   projectId: string | null;
   name: string;
   participants: RoomParticipant[];
+  /** 模型之间自动讨论的最大轮次（1 = 单轮，默认 3） */
+  discussionRounds?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -186,6 +188,8 @@ export async function listRoomParticipantSessionIds(): Promise<Set<string>> {
 export type CreateRoomInput = {
   projectId?: string | null;
   name: string;
+  /** 自动讨论轮次上限（1-10，默认 3） */
+  discussionRounds?: number;
   /** 初始参与者：角色名 + 模型（模型后续可改）+ 可选角色卡名与补充说明。 */
   roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>;
 };
@@ -213,11 +217,15 @@ export async function createRoom(input: CreateRoomInput): Promise<Room> {
     sessionId: "",
     createdAt: now,
   }));
+  const rounds = Number.isInteger(input.discussionRounds) && (input.discussionRounds as number) >= 1 && (input.discussionRounds as number) <= 10
+    ? (input.discussionRounds as number)
+    : undefined;
   const room: Room = {
     id: `room-${randomUUID().slice(0, 8)}`,
     projectId: input.projectId ?? null,
     name,
     participants,
+    ...(rounds !== undefined ? { discussionRounds: rounds } : {}),
     createdAt: now,
     updatedAt: now,
   };

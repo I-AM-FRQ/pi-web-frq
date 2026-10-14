@@ -2,11 +2,12 @@ import { createChatSession, getAvailableModels } from "@/server/pi";
 import { createProjectPersistentSession, openProjectPersistentSession, workspaceForProject, workspaceForSession } from "@/server/session-workspaces";
 import { activeChatSession, hasActiveChatRun, publishActiveChatRunEvent, registerActiveChatRun, unregisterActiveChatRun } from "@/server/active-chat-runs";
 import { invalidateSessionIndex } from "@/server/sessions";
-import { appendRoomMessage, setParticipantSession, type Room, type RoomMessage, type RoomParticipant } from "@/server/rooms";
+import { appendRoomMessage, listRoomMessages, setParticipantSession, type Room, type RoomMessage, type RoomParticipant } from "@/server/rooms";
 import { publishSessionEvent } from "@/server/session-events";
 import { createLoopDetector } from "@/server/loop-detector";
 import { askDecisionModel } from "@/server/decision";
 import { readRoleCard } from "@/server/role-cards";
+import { beginNextRound, recordDiscussionReply } from "@/server/room-discussion";
 
 /**
  * 聊天室角色响应编排。
@@ -41,6 +42,8 @@ export function buildRoomPrompt(input: {
 	visibility: "room" | "private";
 	/** 角色卡内容（从 md 文件动态读取后传入，避免同步函数里做 IO） */
 	roleCardContent?: string;
+	/** 自动讨论轮次（>1 表示模型之间的多轮讨论） */
+	round?: number;
 }): string {
 	const { room, participant, content, visibility } = input;
 	const lines: string[] = [`[聊天室「${room.name}」] 你是房间中的角色「${participant.role}」。`];
@@ -72,6 +75,20 @@ export function buildRoomPrompt(input: {
 			lines.push(`[${senderLabel(message)}] ${text.length > 400 ? `${text.slice(0, 400)}…` : text}`);
 		}
 	}
+	const round = input.round ?? 1;
+	if (round > 1) {
+		// 自动讨论轮次：把上一轮发言交给角色继续推进，并给 [DONE] 出口
+		lines.push("", `这是自动讨论的第 ${round} 轮。`, "上一轮大家的发言：");
+		const previous = input.messages.filter((message) => message.visibility === "room").slice(-8);
+		for (const message of previous) {
+			const who = message.sender.type === "user" ? "用户" : message.sender.role;
+			const text = message.content.replace(/\s+/g, " ").trim();
+			lines.push(`[${who}] ${text.length > 400 ? `${text.slice(0, 400)}…` : text}`);
+		}
+		lines.push("", `请以角色「${participant.role}」的身份针对上述发言继续推进讨论：补充、质疑或收敛共识，不要复述原文。`);
+		lines.push("如果讨论已经充分、你无需再补充，请只回复 [DONE]；如果这条讨论与你无关，请只回复 [SKIP]。");
+		return lines.join("\n");
+	}
 	lines.push("", "最新一条消息：", content, "");
 	lines.push(`请以角色「${participant.role}」的身份继续协作：给出你的判断与成果，不要复述上面的上下文。`);
 	// 群发时给一个“不参与”的出口，避免无关角色强行输出（回复 [SKIP] 不会写入房间）
@@ -85,6 +102,8 @@ export type StartParticipantReplyInput = {
 	content: string;
 	messages: RoomMessage[];
 	visibility: "room" | "private";
+	/** 自动讨论轮次（>1 表示模型之间多轮讨论） */
+	round?: number;
 };
 
 export type StartParticipantReplyResult =
@@ -212,7 +231,9 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 		const reply = streamed.assistantText.trim();
 		// 角色主动表态“与我无关”时不写入房间，避免群发时的噪音
 		const isSkipReply = /^\[?\s*skip\s*\]?$/i.test(reply) || (reply.length <= 16 && /\[?\s*skip\s*\]?/i.test(reply));
-		if (reply && !isSkipReply) {
+		// 讨论是否结束：角色可以回 [DONE] 表示无需再补充
+		const isDoneReply = /^\[?\s*done\s*\]?$/i.test(reply) || (reply.length <= 16 && /\[?\s*done\s*\]?/i.test(reply));
+		if (reply && !isSkipReply && !isDoneReply) {
 			await appendRoomMessage({
 				roomId: room.id,
 				sender: { type: "participant", participantId: participant.id, role: participant.role },
@@ -221,6 +242,34 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 				visibility,
 				...(visibility === "private" ? { targetParticipantId: participant.id } : {}),
 			}).catch((error) => console.error("Unable to append room reply", error));
+		}
+		// 推进讨论轮次：本轮全部完成后若未达上限且未结束，自动开启下一轮
+		try {
+			const decision = recordDiscussionReply(room.id, participant.id, {
+				kind: isDoneReply ? "done" : isSkipReply ? "skip" : "reply",
+			});
+			if ("nextRound" in decision && decision.nextRound > 0) {
+				const state = beginNextRound(room.id, room.participants.map((item) => item.id));
+				if (state) {
+					const messages = await listRoomMessages(room.id).catch(() => []);
+					// 稍等片刻再开下一轮：等本轮的运行彻底收尾（否则可能被判定为 busy 而跳过）
+					setTimeout(() => {
+						for (const next of room.participants) {
+							if (hasActiveChatRun(next.sessionId)) continue;
+							void startParticipantReply({
+								room,
+								participant: next,
+								content: input.content,
+								messages,
+								visibility,
+								round: state.round,
+							});
+						}
+					}, 800);
+				}
+			}
+		} catch (error) {
+			console.error("Unable to advance room discussion", error);
 		}
 	}).catch((error: unknown) => {
 		console.error(`Room participant ${participant.role} prompt failed`, error);

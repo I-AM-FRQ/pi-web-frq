@@ -1712,3 +1712,9 @@ html[data-landscape="1"][data-mobile="1"] .composer textarea { min-height: 50px 
 .room-focus-error p { margin: 0; }
 .room-focus-retry { background: var(--accent); border: 1px solid var(--accent); border-radius: 8px; color: var(--accent-contrast); cursor: pointer; font: inherit; font-size: 12px; margin-top: 12px; padding: 6px 16px; }
 .room-focus-retry:hover { filter: brightness(1.08); }
+
+/* 创建聊天室：自动讨论轮次选择 */
+.create-room-field-inline { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.create-room-rounds { background: var(--bg-input); border: 1px solid var(--border-input); border-radius: 8px; color: var(--text); font: inherit; font-size: 12px; padding: 6px 8px; }
+.create-room-rounds:focus { border-color: var(--accent); outline: 0; }
+.create-room-rounds-hint { color: var(--text-faint); font-size: 11px; font-style: normal; }

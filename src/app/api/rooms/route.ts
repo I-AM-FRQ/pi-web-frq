@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: { code: "invalid_request", message: "请求体格式不正确。" } }, { status: 400, headers: NO_STORE });
   }
-  const payload = body as { projectId?: unknown; name?: unknown; roles?: unknown };
+  const payload = body as { projectId?: unknown; name?: unknown; roles?: unknown; discussionRounds?: unknown };
   const projectId = payload.projectId === null || payload.projectId === undefined
     ? null
     : typeof payload.projectId === "string" ? payload.projectId : undefined;
@@ -53,6 +53,7 @@ export async function POST(request: NextRequest) {
       projectId,
       name: payload.name as string,
       roles: roles as Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>,
+      ...(typeof payload.discussionRounds === "number" ? { discussionRounds: payload.discussionRounds } : {}),
     });
     return NextResponse.json({ room }, { status: 201, headers: NO_STORE });
   } catch (error) {

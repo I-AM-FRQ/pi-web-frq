@@ -9,6 +9,8 @@ export type CreateRoomInput = {
   projectId: string | null;
   name: string;
   roles: Array<{ role: string; modelKey: string; roleCard?: string; rolePrompt?: string }>;
+  /** 角色之间自动讨论的最大轮次（1 = 各自只回应一次） */
+  discussionRounds?: number;
 };
 
 type RoomsState = {

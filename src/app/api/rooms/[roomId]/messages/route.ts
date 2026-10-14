@@ -3,6 +3,7 @@ import { appendRoomMessage, getRoom, listRoomMessages, validParticipantId } from
 import { startParticipantReply } from "@/server/room-runs";
 import { parseStopCommand, routeRoomMessage, type RoomRouting } from "@/server/room-routing";
 import { abortActiveChatRun, hasActiveChatRun } from "@/server/active-chat-runs";
+import { endDiscussion, startDiscussion } from "@/server/room-discussion";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
   // 停止指令：「停止」/「@角色 停止」直接中止对应角色正在运行的模型
   const stopCommand = parseStopCommand(typeof payload.content === "string" ? payload.content : "", room);
   if (stopCommand) {
+    // 结束该房间的自动讨论轮次，避免停止后又被下一轮自动拉起
+    endDiscussion(roomId);
     const stopTargets = room.participants.filter((participant) => stopCommand.targets.includes(participant.id));
     const stopped: string[] = [];
     for (const participant of stopTargets) {
@@ -106,6 +109,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
   }
 
   const contextMessages = await listRoomMessages(roomId);
+  // 用户发言开启一轮讨论：本轮全部角色回复完成后，若未达上限会自动进入下一轮
+  startDiscussion(roomId, targets.map((participant) => participant.id), room.discussionRounds ?? undefined);
   // 各角色并发启动响应（启动阶段在请求内完成，输出在后台继续并写回房间消息）。
   const results = await Promise.allSettled(targets.map((participant) => startParticipantReply({
     room,
