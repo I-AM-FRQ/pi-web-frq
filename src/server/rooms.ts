@@ -35,7 +35,7 @@ export type Room = {
   projectId: string | null;
   name: string;
   participants: RoomParticipant[];
-  /** 模型之间自动讨论的最大轮次（1 = 单轮，默认 3） */
+  /** 模型之间自动讨论的最大轮次（0 或不设 = 不限制；1 = 单轮） */
   discussionRounds?: number;
   createdAt: string;
   updatedAt: string;
@@ -217,7 +217,8 @@ export async function createRoom(input: CreateRoomInput): Promise<Room> {
     sessionId: "",
     createdAt: now,
   }));
-  const rounds = Number.isInteger(input.discussionRounds) && (input.discussionRounds as number) >= 1 && (input.discussionRounds as number) <= 10
+  // 0 表示不限制轮次（靠 [DONE] / 全员 [SKIP] / 用户停止结束）
+  const rounds = Number.isInteger(input.discussionRounds) && (input.discussionRounds as number) >= 0 && (input.discussionRounds as number) <= 10
     ? (input.discussionRounds as number)
     : undefined;
   const room: Room = {

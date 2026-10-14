@@ -5,6 +5,7 @@
  * - 用户发言开启一轮讨论（第 1 轮，触发目标角色）
  * - 本轮全部角色回复完成后，若未达上限且没有角色表示结束 → 自动进入下一轮（全体参与）
  * - 终止条件：达到最大轮次 / 有角色回复 [DONE] / 所有角色都回 [SKIP] / 用户发新消息或停止
+ * - maxRounds <= 0 表示不限制轮次（默认）：只靠 [DONE]、[SKIP] 或用户停止来结束
  */
 
 export type DiscussionState = {
@@ -24,7 +25,8 @@ export type DiscussionState = {
 const DISCUSSIONS = new Map<string, DiscussionState>();
 const STALE_MS = 30 * 60_000;
 
-export const DEFAULT_MAX_ROUNDS = 3;
+/** 默认不限轮次（靠 [DONE] / [SKIP] / 用户停止来终止）。 */
+export const DEFAULT_MAX_ROUNDS = 0;
 
 function pruneStale(now = Date.now()): void {
   for (const [roomId, state] of DISCUSSIONS) {
@@ -32,13 +34,15 @@ function pruneStale(now = Date.now()): void {
   }
 }
 
-/** 用户发言：开始（或重启）该房间的讨论。 */
+/** 用户发言：开始（或重启）该房间的讨论。maxRounds <= 0 表示不限制。 */
 export function startDiscussion(roomId: string, participantIds: string[], maxRounds = DEFAULT_MAX_ROUNDS): DiscussionState {
   pruneStale();
+  const normalized = Number.isInteger(maxRounds) && maxRounds > 10 ? 10 : Math.floor(maxRounds);
   const state: DiscussionState = {
     roomId,
     round: 1,
-    maxRounds: Math.max(1, Math.min(maxRounds, 10)),
+    // <= 0 视为不限制（用 Infinity 表示）
+    maxRounds: normalized > 0 ? normalized : Number.POSITIVE_INFINITY,
     pending: new Set(participantIds),
     concluded: false,
     allSkipped: true,

@@ -36,7 +36,7 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
     { role: "", modelKey: defaultModelKey, roleCard: "", rolePrompt: "" },
     { role: "", modelKey: defaultModelKey, roleCard: "", rolePrompt: "" },
   ]);
-  const [rounds, setRounds] = useState(3);
+  const [rounds, setRounds] = useState(0);
   const [cards, setCards] = useState<RoleCardSummary[]>([]);
   const [cardsDirectory, setCardsDirectory] = useState("");
   const [error, setError] = useState("");
@@ -165,13 +165,14 @@ export function CreateRoomModal({ models, projectName, creating = false, onClose
           <label className="create-room-field create-room-field-inline">
             <span>自动讨论轮次</span>
             <select className="create-room-rounds" value={rounds} onChange={(event) => setRounds(Number(event.target.value))}>
+              <option value={0}>不限制（默认，靠 [DONE] 或停止结束）</option>
               <option value={1}>1 轮（各自只回应一次）</option>
               <option value={2}>2 轮</option>
-              <option value={3}>3 轮（默认）</option>
+              <option value={3}>3 轮</option>
               <option value={5}>5 轮</option>
               <option value={10}>10 轮</option>
             </select>
-            <em className="create-room-rounds-hint">角色之间会自动多轮讨论，达到上限或某角色回复 [DONE] 时结束</em>
+            <em className="create-room-rounds-hint">角色之间会自动多轮讨论；某角色回复 [DONE]、全员 [SKIP] 或你点停止时结束</em>
           </label>
 
           <div className="create-room-section">

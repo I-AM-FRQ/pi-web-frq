@@ -243,7 +243,7 @@ export default function Home() {
     const projectId = roomModalProjectId ?? null;
     setCreatingRoom(true);
     try {
-      const room = await createRoomRef.current({ projectId, name: input.name, roles: input.roles, ...(input.discussionRounds ? { discussionRounds: input.discussionRounds } : {}) });
+      const room = await createRoomRef.current({ projectId, name: input.name, roles: input.roles, ...(typeof input.discussionRounds === "number" ? { discussionRounds: input.discussionRounds } : {}) });
       setSelectedRoomId(room.id);
       selectRoomRef.current(room.id);
       setRoomModalProjectId(undefined);

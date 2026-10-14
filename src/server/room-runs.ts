@@ -128,6 +128,33 @@ async function ensureParticipantSession(room: Room, participant: RoomParticipant
 	return { manager, workspacePath: await workspaceForProject(room.projectId ?? undefined), sessionId };
 }
 
+/** 投送失败时的自动重试次数与退避（0.5s / 1s）。 */
+const DELIVERY_MAX_ATTEMPTS = 3;
+const DELIVERY_RETRY_BASE_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 带确认与重试的消息投送：
+ * startParticipantReply 返回 ok 表示已成功投递（运行已注册、prompt 已发起）；
+ * 返回失败（例如角色正忙、会话/模型瞬时不可用）时按退避自动重投，最多 3 次。
+ * 返回 attempts 便于调用方把“重试了几次才送达”告知用户。
+ */
+export async function startParticipantReplyWithRetry(input: StartParticipantReplyInput): Promise<StartParticipantReplyResult & { attempts: number }> {
+	let last: StartParticipantReplyResult = { ok: false, reason: "failed" };
+	for (let attempt = 1; attempt <= DELIVERY_MAX_ATTEMPTS; attempt += 1) {
+		const result = await startParticipantReply(input);
+		if (result.ok) return { ...result, attempts: attempt };
+		last = result;
+		// 模型不存在属于配置问题，重试无意义
+		if (result.reason === "model_unavailable") return { ...result, attempts: attempt };
+		if (attempt < DELIVERY_MAX_ATTEMPTS) await sleep(DELIVERY_RETRY_BASE_MS * 2 ** (attempt - 1));
+	}
+	return { ...last, attempts: DELIVERY_MAX_ATTEMPTS };
+}
+
 export async function startParticipantReply(input: StartParticipantReplyInput): Promise<StartParticipantReplyResult> {
 	const { room, participant, visibility } = input;
 	// 角色正在运行时：优先用 steer 把消息作为“引导”投递给当前回合（避免排队等待或被跳过）。
@@ -256,13 +283,15 @@ export async function startParticipantReply(input: StartParticipantReplyInput): 
 					setTimeout(() => {
 						for (const next of room.participants) {
 							if (hasActiveChatRun(next.sessionId)) continue;
-							void startParticipantReply({
+							void startParticipantReplyWithRetry({
 								room,
 								participant: next,
 								content: input.content,
 								messages,
 								visibility,
 								round: state.round,
+							}).then((result) => {
+								if (!result.ok) console.warn(`Room round ${state.round} delivery to ${next.role} failed after ${result.attempts} attempts: ${result.reason}`);
 							});
 						}
 					}, 800);

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appendRoomMessage, getRoom, listRoomMessages, validParticipantId } from "@/server/rooms";
-import { startParticipantReply } from "@/server/room-runs";
+import { startParticipantReplyWithRetry } from "@/server/room-runs";
 import { parseStopCommand, routeRoomMessage, type RoomRouting } from "@/server/room-routing";
 import { abortActiveChatRun, hasActiveChatRun } from "@/server/active-chat-runs";
 import { endDiscussion, startDiscussion } from "@/server/room-discussion";
@@ -112,7 +112,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
   // 用户发言开启一轮讨论：本轮全部角色回复完成后，若未达上限会自动进入下一轮
   startDiscussion(roomId, targets.map((participant) => participant.id), room.discussionRounds ?? undefined);
   // 各角色并发启动响应（启动阶段在请求内完成，输出在后台继续并写回房间消息）。
-  const results = await Promise.allSettled(targets.map((participant) => startParticipantReply({
+  // 带确认与自动重试的投送：失败会按退避重投（最多 3 次），outcomes 里带 attempts 便于提示
+  const results = await Promise.allSettled(targets.map((participant) => startParticipantReplyWithRetry({
     room,
     participant,
     content: stored.content,
@@ -126,13 +127,21 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
     if (!outcome.ok) console.warn("Room participant skipped:", JSON.stringify(outcome));
   }
 
+  // 投送摘要：把“重试后才送达”或“投送失败”的情况告诉用户
+  const deliveryDetail = outcomes
+    .filter((outcome) => !outcome.ok || ((outcome as { attempts?: number }).attempts ?? 1) > 1)
+    .map((outcome) => outcome.ok
+      ? `${outcome.role} 重试 ${(outcome as { attempts?: number }).attempts} 次后送达`
+      : `${outcome.role} 投送失败（${outcome.reason ?? "unknown"}）`)
+    .join("；");
+
   return NextResponse.json(
     {
       message: stored,
       triggered: targets.map((participant) => participant.id),
       outcomes,
       // 路由说明：让前端能提示“已点名：X”/“未匹配到角色，可用 @ 指定”
-      ...(routing ? { routing: { reason: routing.reason, detail: routing.detail ?? "" } } : {}),
+      ...(routing ? { routing: { reason: routing.reason, detail: [routing.detail, deliveryDetail].filter(Boolean).join("；") } } : {}),
     },
     { status: 202, headers: NO_STORE },
   );
